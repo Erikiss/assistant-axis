@@ -17,7 +17,9 @@ from . import (  # noqa: F401
     memorization_entry,
     name_variants,
     noise_floor,
+    norm_attribution,
     position_bias,
     rank_attribution,
     scope_checks,
+    sink_stability,
 )

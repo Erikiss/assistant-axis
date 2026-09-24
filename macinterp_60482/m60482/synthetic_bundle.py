@@ -110,29 +110,47 @@ def fake_bundle(seed: int = 0, top_k: int = 50) -> Bundle:
     attn_heads = np.zeros((n_c, 1 + C.N_VARIANTS, L, H, T), dtype=np.float32)
     fam = [C.ANCHOR] + list(C.VARIANT_NAMES)
 
+    # One base profile per passage, then a small per-checkpoint perturbation. The
+    # perturbation scale is chosen so that the across-boundary total-variation distances
+    # land near the measured ones -- anchor ~0.017, control median ~0.033 -- because the
+    # sink_stability probe reads exactly those numbers and a bundle that got them wildly
+    # wrong would exercise the probe without testing it.
+    ANCHOR_JITTER, CONTROL_JITTER = 0.0385, 0.077
+
+    bases = np.zeros((n_p, L, T), dtype=np.float32)
+    for p_i in range(n_p):
+        base = rng.random((L, T)).astype(np.float32) * 0.002
+        for layer in range(L):
+            ref = C.REFERENCE_ATTN_ARGMAX_131000.get(layer)
+            if ref is None:  # layers 20-23: the source table was truncated
+                pos, w = C.SINK_POSITION_NEWLINE, 0.55
+            else:
+                pos, w = ref
+            base[layer, pos] += w
+            # The first token is a sink too, but it must not outrank the layer's own
+            # primary target -- in the measured profile layers 0-2 still point locally
+            # at " km"/" 74". Cap it below the primary weight.
+            base[layer, C.SINK_POSITION_FIRST] += min(0.19, 0.8 * w)
+            base[layer] /= base[layer].sum()
+        bases[p_i] = base
+
     for c_i in range(n_c):
         for p_i in range(n_p):
-            base = rng.random((L, T)).astype(np.float32) * 0.002
-            for layer in range(L):
-                ref = C.REFERENCE_ATTN_ARGMAX_131000.get(layer)
-                if ref is None:  # layers 20-23: the source table was truncated
-                    pos, w = C.SINK_POSITION_NEWLINE, 0.55
-                else:
-                    pos, w = ref
-                base[layer, pos] += w
-                # The first token is a sink too, but it must not outrank the layer's
-                # own primary target -- in the measured profile layers 0-2 still point
-                # locally at " km"/" 74". Cap it below the primary weight.
-                base[layer, C.SINK_POSITION_FIRST] += min(0.19, 0.8 * w)
-                base[layer] /= base[layer].sum()
-            attn_last[c_i, p_i] = base
-            recv = base.copy()
+            quiet = names[p_i] == C.ANCHOR or kinds[p_i] == "variante"
+            scale = ANCHOR_JITTER if quiet else CONTROL_JITTER
+            prof = bases[p_i] * (1.0 + rng.normal(0, scale, (L, T)).astype(np.float32))
+            prof = np.clip(prof, 1e-9, None)
+            prof /= prof.sum(axis=1, keepdims=True)
+            attn_last[c_i, p_i] = prof
+
+            recv = prof.copy()
             recv[:, C.SINK_POSITION_FIRST] += 0.12
             recv /= recv.sum(axis=1, keepdims=True)
             attn_received[c_i, p_i] = recv
+
             if names[p_i] in fam:
                 f = fam.index(names[p_i])
-                heads = np.repeat(base[:, None, :], H, axis=1)
+                heads = np.repeat(prof[:, None, :], H, axis=1)
                 heads = heads * (1.0 + rng.normal(0, 0.15, heads.shape).astype(np.float32))
                 heads = np.clip(heads, 1e-8, None)
                 heads /= heads.sum(axis=2, keepdims=True)
@@ -200,7 +218,8 @@ def fake_bundle(seed: int = 0, top_k: int = 50) -> Bundle:
             "attention_captured": True,
         },
         context_tokens={nm: list(ctx) for nm in fam},
-        aux=_fake_aux(rng, names, kinds, idx, target_p, T),
+        aux={**_fake_aux(rng, names, kinds, idx, target_p, T),
+             **_fake_norm_attn(rng, names, T)},
     )
 
 
@@ -251,4 +270,33 @@ def _fake_aux(rng, names, kinds, idx, target_p, T) -> dict:
         "greedy": greedy,
         "greedy_tokens": 4,
         "name_substitution": name_sub,
+    }
+
+
+def _fake_norm_attn(rng, names, T) -> dict:
+    """A norm-weighted profile in which the sink evaporates.
+
+    Drained value vectors at the sink positions are the mechanism that makes a sink a
+    no-op, so this is the expected shape -- but it is a guess about the real data, not a
+    measurement of it.
+    """
+    from . import config as C
+
+    steps = list(C.EXPOSURE_BOUNDARY)
+    arr = np.zeros((len(steps), len(names), C.N_LAYERS, T), dtype=np.float32)
+    for s_i in range(len(steps)):
+        for p_i in range(len(names)):
+            prof = rng.random((C.N_LAYERS, T)).astype(np.float32) * 0.01 + 0.004
+            # content positions near the end carry the contribution
+            for pos, w in ((206, 0.22), (205, 0.15), (201, 0.08), (203, 0.06)):
+                prof[:, pos] += w
+            # the sinks keep a small residue -- drained, not absent
+            prof[:, C.SINK_POSITION_NEWLINE] += 0.03
+            prof[:, C.SINK_POSITION_FIRST] += 0.02
+            prof /= prof.sum(axis=1, keepdims=True)
+            arr[s_i, p_i] = prof
+    return {
+        "norm_attn": arr,
+        "norm_attn_steps": steps,
+        "norm_attn_names": list(names),
     }

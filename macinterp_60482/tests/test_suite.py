@@ -326,3 +326,82 @@ def test_position_bias_says_what_is_missing_without_the_baseline():
     r = registry.get("position_bias")(fake_bundle())
     assert r.evidence["untrained_baseline_measured"] is False
     assert "untrained_attention" in r.cannot_conclude
+
+
+# ---------------------------------------------------------------------------------
+# norm-weighted attribution (why the attention null is not yet readable)
+# ---------------------------------------------------------------------------------
+
+
+def test_norm_attribution_detects_an_evaporating_sink():
+    b = fake_bundle()
+    r = registry.get("norm_attribution")(b)
+    assert r.verdict == "SUPPORTED"
+    assert r.evidence["evaporates"] is True
+    assert r.evidence["retained_fraction"] < 0.5
+    # the sink positions are the ones the raw profile picked out
+    assert C.SINK_POSITION_NEWLINE in r.evidence["raw_top2_positions"]
+
+
+def test_norm_attribution_is_not_run_without_the_measurement():
+    b = fake_bundle()
+    b.aux.pop("norm_attn")
+    r = registry.get("norm_attribution")(b)
+    assert r.verdict == "NOT_RUN"
+    assert "not measured" in r.cannot_conclude
+
+
+def test_attention_sink_warns_that_weight_is_not_attribution():
+    b = fake_bundle()
+    r = registry.get("attention_sink")(b)
+    assert any("norm_attribution" in c for c in r.caveats)
+
+
+def test_norm_attribution_runs_before_the_head_level_probes():
+    order = [p.name for p in registry.all_probes()]
+    assert order.index("attention_sink") < order.index("norm_attribution")
+    assert order.index("norm_attribution") < order.index("focus_directions")
+
+
+# ---------------------------------------------------------------------------------
+# sink stability (the frozen-profile reading of the attention null)
+# ---------------------------------------------------------------------------------
+
+
+def test_synthetic_attention_shift_matches_the_measured_scale():
+    """The synthetic bundle must land near the measured TV distances, or sink_stability
+    would be exercised without being tested."""
+    b = fake_bundle()
+    r = registry.get("sink_stability")(b)
+    per = r.evidence["per_boundary"]
+    for boundary in ((130000, 131000), (131000, 132000)):
+        key = f"{boundary[0]}->{boundary[1]}"
+        anchor_ref, ctrl_ref, _, _, _ = C.REFERENCE_ATTENTION_SHIFT[boundary]
+        assert per[key]["anchor_tv"] == pytest.approx(anchor_ref, abs=3e-3)
+        assert per[key]["control_median"] == pytest.approx(ctrl_ref, abs=6e-3)
+
+
+def test_sink_stability_reproduces_the_anchor_below_every_control_result():
+    b = fake_bundle()
+    r = registry.get("sink_stability")(b)
+    assert r.verdict == "SUPPORTED"
+    assert r.evidence["frozen"] is True
+    assert r.evidence["anchor_below_every_control_at_every_boundary"] is True
+    for v in r.evidence["per_boundary"].values():
+        assert v["p_greater"] == pytest.approx(1.0)
+
+
+def test_sink_stability_refutes_when_profiles_actually_move():
+    """If attention does move at this spacing, the null is a real null."""
+    b = fake_bundle()
+    rng = np.random.default_rng(7)
+    noisy = rng.random(b.attn_last.shape).astype(np.float32)
+    b.attn_last = noisy / noisy.sum(axis=-1, keepdims=True)
+    r = registry.get("sink_stability")(b)
+    assert r.verdict == "REFUTED"
+    assert r.evidence["frozen"] is False
+
+
+def test_sink_frozen_paper_is_judged_by_its_own_probe():
+    assert PAP.BY_KEY["sink_frozen"].probes == ("sink_stability",)
+    assert PAP.BY_KEY["attention_sinks"].probes == ("attention_sink",)

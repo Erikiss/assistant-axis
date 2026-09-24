@@ -162,6 +162,18 @@ def attention_sink(bundle: Bundle) -> ProbeResult:
         caveats=[
             "Head-averaging hides heads that disagree with the layer. The "
             "focus_directions probe looks per-head for exactly this reason.",
+            "Pythia packs Pile documents without a per-sequence BOS, so there is no "
+            "dedicated sink token and the sink lands on whatever happens to be first "
+            "plus other low-information positions -- which is why position 0 here is "
+            "the mid-word fragment ' st' (Barbero et al., arXiv:2504.02732).",
+            "On the frozen-sink account (arXiv:2410.10781) the sink saturates within "
+            "the first few thousand steps and is fixed thereafter. At step130000 of "
+            "143000, two checkpoints 1000 steps apart then CANNOT encode a single "
+            "exposure, and the attention null follows from the checkpoint choice rather "
+            "than from the absence of an effect. Testing that would mean measuring "
+            "early checkpoints, which this suite does not.",
+            "This probe reads raw attention weight, which is not attribution. See "
+            "norm_attribution before treating its null as evidence.",
             "'Non-content' is decided by a token-string heuristic (whitespace and "
             "punctuation), not by a semantic judgement.",
             S.selection_note(False),

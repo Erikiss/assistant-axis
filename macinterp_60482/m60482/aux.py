@@ -209,3 +209,124 @@ def untrained_attention(
         "untrained_names": [p.name for p in passages],
         "untrained_seed": seed,
     }
+
+
+def _neox_value_states(ckpt, ids: Sequence[int]):
+    """Per-layer value vectors for one passage, ``[layer, head, T, head_dim]``.
+
+    GPT-NeoX fuses Q, K and V into one projection and splits it as
+    ``[batch, seq, n_heads, 3 * head_size]``, taking the last ``head_size`` chunk as V.
+    This reproduces that split from a hook on ``query_key_value``.
+
+    The layout is a property of the ``transformers`` implementation, not of the
+    checkpoint, so it is asserted rather than assumed: a silent mis-split would produce
+    plausible numbers computed from the query projection.
+    """
+    import torch
+
+    model = ckpt.model
+    layers = model.gpt_neox.layers
+    captured: list = [None] * len(layers)
+    handles = []
+
+    def make_hook(i: int):
+        def hook(_module, _inp, out):
+            captured[i] = out.detach()
+        return hook
+
+    for i, layer in enumerate(layers):
+        handles.append(layer.attention.query_key_value.register_forward_hook(make_hook(i)))
+
+    try:
+        inp = torch.tensor([list(ids)], dtype=torch.long, device=ckpt.device)
+        with torch.inference_mode():
+            model(inp, output_attentions=False, use_cache=False)
+    finally:
+        for h in handles:
+            h.remove()
+
+    hidden = model.config.hidden_size
+    n_heads = model.config.num_attention_heads
+    head_dim = hidden // n_heads
+
+    values = []
+    for i, qkv in enumerate(captured):
+        if qkv is None:
+            raise RuntimeError(f"no qkv captured for layer {i}")
+        if qkv.shape[-1] != 3 * hidden:
+            raise RuntimeError(
+                f"layer {i}: query_key_value output is {qkv.shape[-1]}, expected "
+                f"{3 * hidden}. This transformers version does not use the fused "
+                "GPT-NeoX QKV layout and the value split would be wrong."
+            )
+        T = qkv.shape[1]
+        v = qkv.view(1, T, n_heads, 3 * head_dim)[..., 2 * head_dim:]   # [1, T, head, dim]
+        values.append(v[0].permute(1, 0, 2).to(torch.float32).cpu())     # [head, T, dim]
+
+    return torch.stack(values)                                          # [layer, head, T, dim]
+
+
+def norm_weighted_attention(ckpt, passages: Sequence[Passage]) -> np.ndarray:
+    """Kobayashi-style ``||alpha * v||`` profiles, ``[passage, layer, T]``.
+
+    Raw attention weight is not attribution.  Sink positions are exactly the ones whose
+    value vectors are drained, so a position can hold 0.69 of the attention mass and
+    contribute almost nothing to the residual stream.  That matters here because the
+    headline attention result is a *null* -- the anchor shifts less than every control --
+    and a null in a quantity that does not measure contribution is uninformative.
+
+    This computes, for the final query, ``|alpha_j| * ||v_j||`` per head, normalised
+    over positions, then averaged over heads.  It is the simplified form of Kobayashi
+    et al. (arXiv:2004.10102): it omits the output projection W_O, which rescales heads
+    but not positions within a head, so the per-position ordering this probe reads is
+    unaffected.
+    """
+    import torch
+
+    out = None
+    for p_i, passage in enumerate(passages):
+        _, _, last_q, _ = M.forward_pass_all(ckpt, passage.ids, need_attention=True)
+        values = _neox_value_states(ckpt, passage.ids)          # [layer, head, T, dim]
+        v_norm = values.norm(dim=-1)                            # [layer, head, T]
+        weighted = last_q * v_norm                              # [layer, head, T]
+        weighted = weighted / weighted.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+        prof = weighted.mean(dim=1)                             # [layer, T]
+        if out is None:
+            out = np.zeros((len(passages), prof.shape[0], prof.shape[1]), dtype=np.float32)
+        out[p_i] = prof.numpy()
+    return out
+
+
+def measure_norm_attribution(
+    passage_set: PassageSet,
+    cfg: C.RunConfig,
+    *,
+    steps: Sequence[int] = (),
+    progress: bool = True,
+) -> dict:
+    """Norm-weighted attention profiles at the checkpoints that bracket the exposure.
+
+    Defaults to the exposure boundary's two checkpoints -- the comparison that matters
+    -- because this measurement costs a second forward pass per passage.
+    """
+    steps = tuple(steps) or C.EXPOSURE_BOUNDARY
+    passages = passage_set.passages
+    arr = None
+
+    for s_i, step in enumerate(steps):
+        if progress:
+            print(f"[aux] norm-weighted attention, step{step}", flush=True)
+        with M.checkpoint(
+            step, model_id=cfg.model_id, dtype=cfg.dtype,
+            device=cfg.device, need_attention=True,
+        ) as ckpt:
+            prof = norm_weighted_attention(ckpt, passages)
+            if arr is None:
+                arr = np.zeros((len(steps),) + prof.shape, dtype=np.float32)
+            arr[s_i] = prof
+
+    return {
+        "norm_attn": arr,
+        "norm_attn_steps": list(steps),
+        "norm_attn_names": [p.name for p in passages],
+    }

@@ -77,22 +77,39 @@ mündlichen Beschreibung rekonstruiert hat.
 | Focus Directions | arXiv:2503.23306 | contextual heads statt bloßer Verhaltensbeobachtung | **prüfbar** — liest irgendein Kopf die Namensstelle? |
 | Lost in the Middle at Birth | 2026 (Zitat vor Gebrauch prüfen) | leitet Positionsbias aus der Architektur ab, zeigt ihn an *untrainierten* Netzen | **prüfbar, und das einzige mit erfüllten Voraussetzungen** |
 
-### Drei Kandidaten, die nicht auf der Liste stehen
+### Die Kandidaten, die nicht auf der Liste stehen
 
-Die Liste enthält nichts über **Attention Sinks** — obwohl die größte einzelne Zahl im ganzen
-Datensatz 0.44 Attention-Masse auf einem Newline ist. Das ist die Signatur aus
-arXiv:2309.17453 (StreamingLLM) und arXiv:2402.17762 (Massive Activations).
+**Attention Sinks** (arXiv:2309.17453 StreamingLLM, arXiv:2402.17762 Massive Activations).
+Die größte einzelne Zahl im ganzen Datensatz ist 0.44 Attention-Masse auf einem Newline, und
+die Liste sagt dazu nichts. Diese Arbeiten sagen den gemessenen Schichtsplit direkt voraus:
+lokale Attention in den untersten Schichten, Sink darüber — gemessen sind Schichten 0–2 lokal
+auf `" km"`/`" 74"`, Schichten 3–19 auf nicht-inhaltlichen Positionen. Pythia packt Pile-
+Dokumente ohne BOS je Sequenz, weshalb Position 0 hier das Wortfragment `" st"` ist
+(arXiv:2504.02732).
 
-Sie enthält auch nichts über den **lokalen Fortsetzungsprior**. Die drei wahrscheinlichsten
-Fortsetzungen sind genau die drei Schreibweisen der Einheit: `ph`, `/`, ` per`. Das sieht nach
-einem Häufigkeitswettbewerb zwischen Einheitenkonventionen aus, und es könnte das ganze
-Phänomen sein. Die Trunkierungsleiter entscheidet das: Wenn p(` per`) aus den letzten zwei
-Tokens schon auf dem Vollkontext-Wert liegt, erklärt jede passagenbezogene Hypothese etwas,
-das es nicht gibt.
+**Der eingefrorene Sink** (arXiv:2410.10781). Das einzige Paper, das das *Vorzeichen* des
+seltsamsten Befunds vorhersagt: Der Anker verschiebt sich *weniger* als alle 40 Kontrollen.
+Wenn der Sink in den ersten paar tausend Schritten entsteht und danach festliegt, ist das
+Profil bei Schritt 130000 von 143000 seit ~128000 Schritten gesättigt — zwei Checkpoints im
+Abstand von 1000 Schritten können dann keine einzelne Exposition kodieren. Der Attention-Null
+folgt dann aus der Checkpoint-Wahl, nicht aus der Abwesenheit eines Effekts.
 
-Und sie enthält nichts über **Nullkalibrierung** — was zwischen zwei Checkpoints passiert,
-wenn nichts passiert ist. Das ist keine Erklärung, sondern die Vorbedingung dafür, dass es
-etwas zu erklären gibt, und wird im Bericht getrennt ausgewiesen.
+**Attention ist keine Attribution** (arXiv:2004.10102). Der Grund, warum der Attention-Null
+bisher *gar nicht lesbar* ist. In den Residualstrom fließt `α·v`, und Sink-Positionen sind
+genau die mit ausgetrockneten Value-Vektoren — so funktioniert ein Sink als No-Op. Eine
+Position kann 0.69 der Masse halten und fast nichts beitragen. Ein Null in einer Größe, die
+keinen Beitrag misst, ist in beide Richtungen uninformativ. `norm_attribution` rechnet das
+Profil als `|α_j|·‖v_j‖` neu.
+
+**Der lokale Fortsetzungsprior.** Die drei wahrscheinlichsten Fortsetzungen sind genau die
+drei Schreibweisen der Einheit: `ph`, `/`, ` per`. Das sieht nach einem Häufigkeitswettbewerb
+zwischen Einheitenkonventionen aus, und es könnte das ganze Phänomen sein. Die
+Trunkierungsleiter entscheidet: Wenn p(` per`) aus den letzten zwei Tokens schon auf dem
+Vollkontext-Wert liegt, erklärt jede passagenbezogene Hypothese etwas, das es nicht gibt.
+
+**Nullkalibrierung** — was zwischen zwei Checkpoints passiert, wenn nichts passiert ist. Keine
+Erklärung, sondern die Vorbedingung dafür, dass es etwas zu erklären gibt; im Bericht getrennt
+ausgewiesen.
 
 ---
 
@@ -166,6 +183,8 @@ stellen sollte.
 | 30 | `context_dependence` | Wie kurz darf der Kontext werden? |
 | 35 | `ctx_nll_structure` | Hat der NLL-Rückgang irgendeine Positionsstruktur? |
 | 40 | `attention_sink` | Ist das Profil ein Sink-Profil, und unterscheidet es sich von Kontrollen? |
+| 42 | `sink_stability` | Bewegt sich das Profil zwischen benachbarten Checkpoints überhaupt? |
+| 45 | `norm_attribution` | Überlebt der Sink die Gewichtung mit dem, was er trägt? |
 | 50 | `focus_directions` | Liest irgendein Kopf die Namensstelle? |
 | 60 | `position_bias` | Teilen alle 69 Passagen ein Profil? Ist es schon untrainiert da? |
 | 70 | `cliff_token_scope`, `self_loop_scope`, `repeat_curse_scope` | Ist der Gegenstand überhaupt vorhanden? |
@@ -215,8 +234,14 @@ Aussage.
   Probe zu sagen, ob ihre Statistik eine Funktion dieses Auswahlkriteriums ist.
 - Attention zeigt, welche Schicht welche Stelle liest, nicht in welcher Reihenfolge. Ein
   Transformer hat Tiefe, keine Zeit.
-- Aufmerksamkeitsmasse ist keine Attribution. Ein Kopf mit 2 % der Masse kann die entscheidende
-  Information tragen. Das zu klären bräuchte Ablation oder Patching; keine dieser Proben tut das.
+- Aufmerksamkeitsmasse ist keine Attribution. `norm_attribution` gewichtet mit `‖v‖` und ist
+  ein besserer Näherungswert, aber keine Messung des Beitrags: Es ignoriert Auslöschung
+  zwischen Positionen. Das direkt zu klären bräuchte Ablation oder Patching; keine dieser
+  Proben tut das.
+- Die Lesart „das Profil ist eingefroren" ist ein Schluss aus den gemessenen Checkpoints, kein
+  Test der Entstehungsaussage. Sie zu bestätigen hieße, frühe Checkpoints zu messen
+  (step1000–step10000), wo der Sink entstehen soll. Diese Suite misst vier Checkpoints um
+  Schritt 130000.
 - `global_sample_index` ist suite-spezifisch. `pythia-1.4b` und `pythia-1.4b-deduped` haben
   verschiedene Datenreihenfolgen, also bezeichnet Index 134428942 in beiden eine andere Sequenz.
   Welche Suite den Anker erzeugt hat, entscheidet die Architektur nicht — beide Configs sind

@@ -123,6 +123,37 @@ PAPERS: tuple[Paper, ...] = (
         probes=("attention_sink",),
     ),
     Paper(
+        key="sink_frozen",
+        title="When Attention Sink Emerges in Language Models: An Empirical View",
+        citation="arXiv:2410.10781",
+        date="2024-10",
+        on_user_list=False,
+        surfaced_because=(
+            "It is the only account that predicts the SIGN of the strangest number in "
+            "the dataset -- that the anchor shifts LESS than 40 out of 40 controls. On "
+            "its account the sink saturates in the first couple of thousand steps and "
+            "is thereafter frozen, so by step130000 of 143000 two checkpoints 1000 "
+            "steps apart cannot encode a single exposure. The attention null is then a "
+            "derived consequence of which checkpoints were chosen, not a failed "
+            "measurement."
+        ),
+        probes=("sink_stability",),
+    ),
+    Paper(
+        key="attention_not_attribution",
+        title="Attention is Not Only a Weight: Analyzing Transformers with Vector Norms",
+        citation="arXiv:2004.10102",
+        date="2020-11",
+        on_user_list=False,
+        surfaced_because=(
+            "The attention result is a null, and this is the reason the null cannot yet "
+            "be read. Sink positions are exactly the ones whose value vectors are "
+            "drained, so raw attention weight does not measure contribution and a null "
+            "in it is uninformative in both directions."
+        ),
+        probes=("norm_attribution",),
+    ),
+    Paper(
         key="bigram_prior",
         title="(no single paper) local continuation prior / tokenizer-driven prediction",
         citation="—",
