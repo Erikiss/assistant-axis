@@ -188,6 +188,14 @@ def markdown(bundle: Bundle, results: Sequence[ProbeResult]) -> str:
     )
     if meta.get("warning"):
         lines.append(f"> **{meta['warning']}**\n")
+    if meta.get("reproduction_mismatch"):
+        lines.append(
+            "> **This run does not reproduce the earlier measurement.** It is "
+            "therefore about a different object -- a different model variant, dtype or "
+            "passage set -- and every verdict below is about that object, not about "
+            "the original finding.\n"
+        )
+        lines.append(_table(meta["reproduction_mismatch"]))
 
     # --- the standing limits ----------------------------------------------------------
     n_states = max(len(bundle.state_names), 1)

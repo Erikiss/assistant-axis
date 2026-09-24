@@ -716,3 +716,60 @@ def test_scope_checks_are_anchor_independent_by_construction():
     sham = {r.probe: r.verdict for r in registry.run(sham_bundle(), progress=False)}
     for name in ("cliff_token_scope", "self_loop_scope"):
         assert real[name] == sham[name] == "SCOPE_FAILED"
+
+
+# ---------------------------------------------------------------------------------
+# the run-level gate
+# ---------------------------------------------------------------------------------
+
+from m60482 import run as R  # noqa: E402
+
+
+def test_the_gate_stops_a_run_whose_anchor_is_not_the_pile_sample(monkeypatch):
+    """The failure this catches is a wrong model variant, which nothing else can:
+    the two repos have identical configs and identical tokenizer hashes."""
+    monkeypatch.setattr(
+        P, "verify_anchor_against_pile",
+        lambda ps, **kw: {
+            "checked": True, "context_matches": False, "target_matches": True,
+            "first_differing_position": 17, "note": "x",
+        },
+    )
+    with pytest.raises(RuntimeError, match="not state 60482"):
+        R._gate_passages(P.synthetic(), strict=True)
+
+
+def test_an_unreachable_check_does_not_block(monkeypatch, capsys):
+    """Being offline is not evidence of a wrong passage set."""
+    monkeypatch.setattr(
+        P, "verify_anchor_against_pile",
+        lambda ps, **kw: {"checked": False, "reason": "OSError: no network"},
+    )
+    R._gate_passages(P.synthetic(), strict=True)
+    assert "skipped" in capsys.readouterr().out
+
+
+def test_a_matching_anchor_passes(monkeypatch, capsys):
+    monkeypatch.setattr(
+        P, "verify_anchor_against_pile",
+        lambda ps, **kw: {"checked": True, "context_matches": True, "target_matches": True},
+    )
+    R._gate_passages(P.synthetic(), strict=True)
+    assert "variant confirmed" in capsys.readouterr().out
+
+
+def test_a_reproduction_mismatch_is_carried_into_the_report():
+    b = fake_bundle()
+    b.meta["reproduction_mismatch"] = [
+        {"step": 131000, "quantity": "p_target", "expected": 0.09087, "got": 0.5, "ok": False}
+    ]
+    md = report.markdown(b, registry.run(b, progress=False))
+    assert "does not reproduce the earlier measurement" in md
+
+
+def test_full_logits_are_declared_in_the_metadata():
+    """A probe reading final_logits must be able to tell 'not captured' from 'empty'."""
+    b = fake_bundle()
+    assert b.meta["full_logits_captured"] is False
+    assert b.final_logits.size == 0
+    assert C.RunConfig().capture_full_logits is True

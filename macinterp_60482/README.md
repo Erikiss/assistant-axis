@@ -170,6 +170,12 @@ python -m m60482.run --smoke
 python -m m60482.run --reuse-bundle runs/<id>/bundle.npz --probes noise_floor context_dependence
 ```
 
+Vor der Messung prüft der Treiber den Anker gegen die echte Pile-Sequenz und **bricht ab**,
+wenn er nicht passt. Das ist der Fehler, den sonst nichts fängt: Eine Passagenmenge, die gegen
+`pythia-1.4b-deduped` gebaut wurde, sieht überall sonst korrekt aus — gleiche Config, gleicher
+Tokenizer-Hash. Nur die Datenreihenfolge verrät sie. Ohne Netz wird die Prüfung gemeldet und
+übersprungen; offline zu sein ist kein Beleg für einen falschen Satz.
+
 Die Zusatzmessungen sind standardmäßig **an**. Ohne sie melden vier Proben `NOT_RUN` —
 darunter `context_dependence`, die die Frage am ehesten entscheidet. Jede Stufe wird ins
 gecachte Bundle geschrieben, sobald sie fertig ist, also überlebt ein abgestürzter Lauf das,
@@ -178,7 +184,7 @@ was er schon gemessen hat.
 ### Tests
 
 ```bash
-pytest tests/ -q                          # 65 Tests, keine GPU, kein Download, kein Netz
+pytest tests/ -q                          # 70 Tests, keine GPU, kein Download, kein Netz
 M60482_NETWORK_TESTS=1 pytest tests/ -q   # + 3 Tests gegen huggingface.co (~12 KB)
 ```
 
@@ -193,6 +199,8 @@ m60482/
   pile.py              den Anker exakt aus dem Pile holen (4 KB Range-Request)
   model.py             Checkpoint-Laden, fp32, eager attention, Determinismus
   measure.py           Bundle: alles, was ein Forward-Pass je Passage liefert
+                       (inkl. der vollen Logit-Zeile — 55 MB, und damit muss keine
+                       Statistik mehr so tun, als wäre alles außerhalb der Top-50 null)
   aux.py               Trunkierungsleiter, Greedy-Fortsetzung, Namensersetzung, untrainiert
   stats.py             kontrollbezogene p-Werte und die Grenzen, die darin stehen
   registry.py          der Proben-Vertrag

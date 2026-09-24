@@ -34,6 +34,38 @@ def make_run_id(stamp: str | None = None) -> str:
     return stamp or time.strftime("%Y%m%d_%H%M%S")
 
 
+def _gate_passages(ps, *, strict: bool = True) -> None:
+    """Check the anchor against the real Pile sample before spending an hour on it.
+
+    A wrong model variant is the failure this catches, and nothing else in the pipeline
+    can: ``pythia-1.4b`` and ``-deduped`` have byte-identical configs and the same
+    ``tokenizer.json`` sha256 at every revision, so ``verify_tokenizer`` passes on both.
+    Only the training data order tells them apart, and that is one 4 KB range request.
+
+    Needs network. A check that could not run is reported and does not block -- an
+    offline environment is not evidence of a wrong passage set -- but a check that ran
+    and *failed* stops the run, because every number after it would be about a
+    different object.
+    """
+    check = P.verify_anchor_against_pile(ps)
+    if not check.get("checked"):
+        print(f"anchor/Pile check skipped: {check.get('reason')}", flush=True)
+        return
+    if check["context_matches"] and check["target_matches"]:
+        print("anchor matches the Pile training sample (variant confirmed).", flush=True)
+        return
+    message = (
+        "The anchor does not match Pile sample "
+        f"{C.ANCHOR_GLOBAL_SAMPLE_INDEX}: first differing position "
+        f"{check.get('first_differing_position')}. This is not state 60482 -- most "
+        "likely the passage set was built against pythia-1.4b-deduped, whose data "
+        "order is different. Every measurement below would be about another passage."
+    )
+    if strict:
+        raise RuntimeError(message)
+    print(f"WARNING: {message}", flush=True)
+
+
 def build_bundle(
     cfg: C.RunConfig,
     *,
@@ -61,6 +93,7 @@ def build_bundle(
         ps = None
     else:
         ps = P.resolve(passages_path, roots, allow_synthetic=allow_synthetic)
+        _gate_passages(ps, strict=not allow_synthetic)
         bundle = measure(ps, cfg)
         if cache:
             bundle.save(cache)
@@ -201,6 +234,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "(model variant, dtype or passage set). Probe results below are "
                     "about that object, not about the original finding.\n"
                 )
+                bundle.meta["reproduction_mismatch"] = [
+                    r for r in check["rows"] if not r["ok"]
+                ]
 
     print("\nrunning probes\n" + "-" * 60)
     results = registry.run(bundle, tuple(args.probes))

@@ -182,6 +182,12 @@ class RunConfig:
     dtype: str = "float32"          # see model.py -- fp16 is not safe here
     device: str = "cuda"
     top_k: int = 50
+    #: Store the whole final-position logit row, not just the top-k. 4 x 69 x 50304 in
+    #: float32 is 55 MB -- nothing beside 22.6 GB of weights -- and it retires a class
+    #: of bug at once: any statistic over the full vocabulary (mass on context tokens,
+    #: a normaliser-free vocabulary-centred logit, a competitor that left the top-k)
+    #: otherwise has to treat everything outside the top-50 as zero.
+    capture_full_logits: bool = True
     capture_attention: bool = True
     capture_heads_for: tuple[str, ...] = ()   # filled by the driver with the anchor family
     output_dir: str = "runs"

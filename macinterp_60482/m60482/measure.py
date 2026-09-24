@@ -76,6 +76,11 @@ class Bundle:
     top1_ids: np.ndarray          # [ckpt, passage] int32
     top1_probs: np.ndarray        # [ckpt, passage] float32
 
+    #: [ckpt, passage, vocab] float32, or shape (...,0) when not captured. The whole
+    #: final-position logit row, so that a statistic over the full vocabulary does not
+    #: have to pretend everything outside the top-k is zero.
+    final_logits: np.ndarray
+
     # --- the context itself ----------------------------------------------------------
     ctx_nll: np.ndarray           # [ckpt, passage, T-1] float32, teacher-forced
     ctx_ids: np.ndarray           # [passage, T] int32
@@ -176,6 +181,7 @@ class Bundle:
             entropy=self.entropy,
             top1_ids=self.top1_ids,
             top1_probs=self.top1_probs,
+            final_logits=self.final_logits,
             ctx_nll=self.ctx_nll,
             ctx_ids=self.ctx_ids,
             attn_last=self.attn_last,
@@ -207,6 +213,7 @@ class Bundle:
             entropy=z["entropy"],
             top1_ids=z["top1_ids"],
             top1_probs=z["top1_probs"],
+            final_logits=z["final_logits"] if "final_logits" in z.files else np.zeros((0, 0, 0), dtype=np.float32),
             ctx_nll=z["ctx_nll"],
             ctx_ids=z["ctx_ids"],
             attn_last=z["attn_last"],
@@ -293,6 +300,7 @@ def measure(
     entropy = np.zeros((n_ckpt, n_pass), dtype=np.float32)
     top1_ids = np.zeros((n_ckpt, n_pass), dtype=np.int32)
     top1_probs = np.zeros((n_ckpt, n_pass), dtype=np.float32)
+    final_logits = np.zeros((0, 0, 0), dtype=np.float32)
     ctx_nll = np.zeros((n_ckpt, n_pass, T - 1), dtype=np.float32)
     ctx_ids = np.asarray([p.ids for p in passages], dtype=np.int32)
     target_ids = np.asarray([p.target for p in passages], dtype=np.int32)
@@ -327,6 +335,13 @@ def measure(
                 logits, nll, last_q, received = M.forward_pass_all(
                     ckpt, passage.ids, need_attention=cfg.capture_attention
                 )
+                if cfg.capture_full_logits:
+                    if final_logits.size == 0:
+                        final_logits = np.zeros(
+                            (n_ckpt, n_pass, logits.shape[0]), dtype=np.float32
+                        )
+                    final_logits[c, p_i] = logits.numpy()
+
                 if cfg.capture_attention:
                     attn_last[c, p_i] = last_q.mean(dim=1).numpy()
                     attn_received[c, p_i] = received.mean(dim=1).numpy()
@@ -387,6 +402,7 @@ def measure(
         "elapsed_s": round(time.time() - started, 1),
         "vocab": vocab,
         "attention_captured": bool(cfg.capture_attention),
+        "full_logits_captured": bool(cfg.capture_full_logits),
         "model_variant": C.MODEL_VARIANT,
         "free_disk": bool(cfg.extra.get("free_disk")),
     }
@@ -406,6 +422,7 @@ def measure(
         entropy=entropy,
         top1_ids=top1_ids,
         top1_probs=top1_probs,
+        final_logits=final_logits,
         ctx_nll=ctx_nll,
         ctx_ids=ctx_ids,
         attn_last=attn_last,
