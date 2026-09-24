@@ -190,11 +190,21 @@ def markdown(bundle: Bundle, results: Sequence[ProbeResult]) -> str:
         lines.append(f"> **{meta['warning']}**\n")
 
     # --- the standing limits ----------------------------------------------------------
+    n_states = max(len(bundle.state_names), 1)
+    n_comparisons = n_states * C.N_BOUNDARIES
+    corrected_alpha = 0.05 / n_comparisons
+
     lines.append("## What this run cannot do, regardless of what it found\n")
     lines.append(
         f"- With {C.N_CONTROLS} controls, the smallest attainable p-value is "
-        f"1/{C.N_CONTROLS + 1} = {C.MIN_ATTAINABLE_P:.4f}. No result here can be "
-        "significant after correction for the number of probes below.\n"
+        f"1/{C.N_CONTROLS + 1} = {C.MIN_ATTAINABLE_P:.4f}. This study makes "
+        f"{n_states} states x {C.N_BOUNDARIES} boundaries = {n_comparisons} "
+        f"comparisons, which Bonferroni would require to clear "
+        f"alpha = {corrected_alpha:.5f}. The floor is "
+        f"{C.MIN_ATTAINABLE_P / corrected_alpha:.0f}x above that, so **no result in "
+        "this design can survive correction**. That is a property of the design, not "
+        "of the data, and no care in the analysis repairs it -- only more controls, or "
+        "a single pre-registered comparison, would.\n"
         f"- There are {C.N_BOUNDARIES} boundaries and one of them is the exposure "
         "boundary. Selecting it after the fact is a 1-in-3 choice; the two placebo "
         "boundaries are the entire null, so 'outside the placebo range' means "
@@ -241,17 +251,23 @@ def markdown(bundle: Bundle, results: Sequence[ProbeResult]) -> str:
         )
     )
     lines.append(
-        "Premise checks (not explanations -- these decide whether there is an effect "
-        "to explain):\n"
+        "Premise checks. These are not explanations -- they decide whether there is an "
+        "effect to explain, and a `refuted` here means the *statistic* did not hold up, "
+        "which is a finding about the measurement rather than about the model:\n"
     )
+    by_probe_name = {r.probe: r for r in results}
     lines.append(
         _table(
             [
-                {"check": k, "verdict": _VERDICT_MARK.get(v, v)}
+                {
+                    "check": k,
+                    "verdict": _VERDICT_MARK.get(v, v),
+                    "finding": by_probe_name[k].summary if k in by_probe_name else "",
+                }
                 for p in verdict["papers"] if p["kind"] == "premise"
                 for k, v in p["probes"].items()
             ],
-            ["check", "verdict"],
+            ["check", "verdict", "finding"],
         )
     )
 
