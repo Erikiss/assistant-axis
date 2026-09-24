@@ -343,3 +343,40 @@ def resolve(
         if warn:
             print(f"  !! {warn}", flush=True)
     return ps
+
+
+def verify_anchor_against_pile(ps: PassageSet, *, timeout: float = 60.0) -> dict:
+    """Check a passage set's anchor against the actual Pile training sample.
+
+    This is the strongest available check on a non-canonical passage set.  The anchor's
+    context is exactly ``row[:207]`` of training sample 134428942, so a set whose anchor
+    matches that is carrying the real passage even when its file hash does not match the
+    K8 snapshot -- which usually means only the controls were re-drawn.
+
+    Costs one 4 KB range request and needs network access.  Returns a dict rather than
+    raising, so a driver can record the outcome either way.
+    """
+    from . import pile
+
+    try:
+        ctx, target = pile.rebuild_anchor(timeout=timeout)
+    except (OSError, RuntimeError, AssertionError) as exc:
+        return {"checked": False, "reason": f"{type(exc).__name__}: {exc}"}
+
+    anchor = ps.anchor
+    ctx_ok = tuple(anchor.ids) == tuple(ctx)
+    tgt_ok = anchor.target == target
+    first_diff = next(
+        (i for i, (a, b) in enumerate(zip(anchor.ids, ctx)) if a != b), None
+    )
+    return {
+        "checked": True,
+        "context_matches": ctx_ok,
+        "target_matches": tgt_ok,
+        "first_differing_position": first_diff,
+        "note": (
+            "The anchor is the real Pile passage regardless of the file hash."
+            if ctx_ok and tgt_ok
+            else "The anchor does NOT match the Pile sample; this is not state 60482."
+        ),
+    }

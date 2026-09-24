@@ -149,3 +149,67 @@ def anchor_context_and_target(row: list[int]) -> tuple[list[int], int]:
     from . import config as C
 
     return row[: C.ANCHOR_T], row[C.ANCHOR_T]
+
+
+def identify_variant(
+    global_sample_index: int | None = None,
+    *,
+    timeout: float = 60.0,
+    verbose: bool = True,
+) -> str:
+    """Decide ``pythia-1.4b`` vs ``pythia-1.4b-deduped`` from the data, not by assumption.
+
+    Fetches the same sample index from both preshuffled corpora and checks each against
+    the frozen anchor.  Exactly one should match; that names the suite the anchor's
+    exposure step belongs to.
+
+    Costs about 8 KB over the wire.  Worth running once per environment, because
+    nothing else discriminates the two: the model configs are byte-identical and
+    ``tokenizer.json`` has the same sha256 on both repos at every revision.
+    """
+    from . import config as C
+
+    idx = C.ANCHOR_GLOBAL_SAMPLE_INDEX if global_sample_index is None else global_sample_index
+
+    matches = []
+    for name, repo in (("pythia-1.4b", STANDARD_REPO), ("pythia-1.4b-deduped", DEDUPED_REPO)):
+        try:
+            row = fetch_training_row(idx, repo=repo, timeout=timeout)
+            check_anchor(row)
+        except AssertionError as exc:
+            if verbose:
+                print(f"{name}: no  ({str(exc)[:80]})", flush=True)
+            continue
+        except OSError as exc:
+            if verbose:
+                print(f"{name}: unreachable ({exc})", flush=True)
+            continue
+        matches.append(name)
+        if verbose:
+            print(f"{name}: MATCH", flush=True)
+
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        raise RuntimeError(
+            f"sample {idx} matches the anchor in neither corpus. Either the index is "
+            "wrong or the anchor's frozen ids are."
+        )
+    raise RuntimeError(
+        f"sample {idx} matches the anchor in both corpora ({matches}); the index does "
+        "not discriminate the variant."
+    )
+
+
+def rebuild_anchor(timeout: float = 60.0) -> tuple[list[int], int]:
+    """Rebuild the anchor's ``(context, target)`` exactly, from a 4 KB range request.
+
+    The canonical ``passagen.json`` depends on Drive tables that may not be at hand.
+    The anchor does not: it is the first 208 tokens of one Pile training sample, and
+    this returns them, verified.
+    """
+    from . import config as C
+
+    row = fetch_training_row(C.ANCHOR_GLOBAL_SAMPLE_INDEX, timeout=timeout)
+    check_anchor(row)
+    return anchor_context_and_target(row)

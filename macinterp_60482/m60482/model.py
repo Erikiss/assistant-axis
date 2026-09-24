@@ -22,6 +22,7 @@ import gc
 import os
 from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterator, Sequence
 
 from . import config as C
@@ -89,8 +90,14 @@ def load_tokenizer(model_id: str = C.MODEL_ID, revision: str = C.TOKENIZER_REVIS
 
 
 def verify_tokenizer(tokenizer) -> None:
-    """Assert the tokenizer agrees with the frozen ids.  Cheap, and catches a wrong
-    model variant before four checkpoints have been downloaded."""
+    """Assert the tokenizer agrees with the frozen ids.
+
+    This catches a wrong *tokenizer* -- a different model family, a corrupted download.
+    It cannot catch a wrong model *variant*: ``tokenizer.json`` has the same sha256 on
+    ``pythia-1.4b`` and ``pythia-1.4b-deduped``, and at every revision of both. Only the
+    training data order discriminates those, which is what
+    :func:`m60482.pile.identify_variant` is for.
+    """
     got = tokenizer.decode([C.TARGET_TOKEN_ID])
     if got != C.TARGET_TOKEN_STR:
         raise RuntimeError(
@@ -152,19 +159,61 @@ def load_checkpoint(
     )
 
 
-@contextmanager
-def checkpoint(step: int, **kwargs) -> Iterator[LoadedCheckpoint]:
-    """Load one checkpoint, hand it over, and free it.
+def _snapshot_dir(step: int, model_id: str, cache_dir: str | None) -> "Path | None":
+    """Where huggingface_hub put this revision's files, if it is still there."""
+    from pathlib import Path
 
-    Four fp32 Pythia-1.4B checkpoints do not need to be resident at once, and on Colab
-    the *disk* fills before the GPU does.  Always use this rather than holding four
-    models.
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+    except ImportError:
+        return None
+    root = Path(cache_dir or HF_HUB_CACHE) / f"models--{model_id.replace('/', '--')}"
+    snapshots = root / "snapshots"
+    if not snapshots.exists():
+        return None
+    return root
+
+
+def free_checkpoint_disk(step: int, model_id: str = C.MODEL_ID, cache_dir: str | None = None) -> int:
+    """Delete a downloaded revision's blobs.  Returns bytes freed.
+
+    Four fp32 checkpoints are ~22.6 GB of safetensors, and HuggingFace does NOT share
+    blobs between revisions of the same repo -- each ``stepNNNNNN`` is a full copy. On
+    Colab the disk fills before the GPU does, usually on the fourth checkpoint, after
+    the run has already cost forty minutes.
+
+    This is deliberately not automatic: re-downloading is expensive, so a run that fits
+    should keep its cache. :func:`checkpoint` takes ``free_disk=True`` when it does not.
+    """
+    import shutil
+
+    root = _snapshot_dir(step, model_id, cache_dir)
+    if root is None or not root.exists():
+        return 0
+    freed = sum(f.stat().st_size for f in root.rglob("*") if f.is_file())
+    shutil.rmtree(root, ignore_errors=True)
+    return freed
+
+
+@contextmanager
+def checkpoint(step: int, *, free_disk: bool = False, **kwargs) -> Iterator[LoadedCheckpoint]:
+    """Load one checkpoint, hand it over, free the GPU memory, and optionally the disk.
+
+    Four fp32 Pythia-1.4B checkpoints do not need to be resident at once. Always use
+    this rather than holding four models. Pass ``free_disk=True`` on a machine whose
+    disk cannot hold ~22.6 GB of cached revisions.
     """
     ckpt = load_checkpoint(step, **kwargs)
     try:
         yield ckpt
     finally:
         ckpt.free()
+        if free_disk:
+            freed = free_checkpoint_disk(
+                step, kwargs.get("model_id", C.MODEL_ID), kwargs.get("cache_dir")
+            )
+            if freed:
+                print(f"    freed {freed / 1e9:.1f} GB of step{step} from disk", flush=True)
 
 
 def forward_pass(

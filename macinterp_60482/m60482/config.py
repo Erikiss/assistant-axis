@@ -79,6 +79,12 @@ N_PASSAGES = N_STATES + N_CONTROLS + N_VARIANTS  # 69
 
 PASSAGE_KINDS = ("state_haupt", "state_extra", "variante", "kontrolle")
 
+#: The anchor's 207-token context is literally ``row[:207]`` of training sample
+#: 134428942, and its target is ``row[207]``.  So the anchor family can be rebuilt
+#: exactly from a 4098-byte range request -- no Drive, no 602 GB corpus download.
+#: The 40 controls still need the seed-42 draw from pile-uncopyrighted.
+ANCHOR_IS_PILE_ROW_PREFIX = True
+
 #: sha256 over sorted (name, art, T, ids, ziel) of the canonical K8 passage set.
 CANONICAL_PASSAGES_SHA256 = (
     "960bb0c0c54c9c4ce92e2b132570246724280c5953183b490f705cf83cd4d2fd"
@@ -196,14 +202,19 @@ N_HEADS = 16
 HIDDEN_SIZE = 2048
 CONFIG_VOCAB_SIZE = 50304   # padded; the tokenizer's real vocabulary is smaller
 
-#: pythia-1.4b and pythia-1.4b-deduped have byte-identical configs.  They do NOT share a
-#: training data order, so ``global_sample_index`` 134428942 identifies a different
-#: sequence in each.  Which suite the anchor came from cannot be settled from the
-#: architecture and must be verified against the index files -- see :mod:`m60482.pile`.
-DEDUP_AMBIGUITY = (
-    "global_sample_index is suite-specific: pythia-1.4b and pythia-1.4b-deduped have "
-    "different data orders. Verify which suite produced index 134428942 before "
-    "attributing the exposure to step 131278."
+#: RESOLVED, by fetching sample 134428942 from both preshuffled corpora and checking it
+#: against the frozen anchor (see :mod:`m60482.pile`).  The standard corpus row carries
+#: the name ids at 124-127, ``" per"`` at 207, ``"\n"`` at 46 and ``" st"`` at 0; the
+#: deduped corpus at the same index is an unrelated document about gym instructors.
+#:
+#: The architecture cannot settle this -- the two configs are byte-identical -- and
+#: neither can the tokenizer, whose ``tokenizer.json`` has the same sha256 on both
+#: repos and at every revision.  Only the data order discriminates.
+MODEL_VARIANT = "pythia-1.4b"        # NOT -deduped
+MODEL_VARIANT_VERIFIED_BY = (
+    "m60482.pile.check_anchor() passes on EleutherAI/pile-standard-pythia-preshuffled "
+    "row 134428942 and fails on EleutherAI/pile-deduped-pythia-preshuffled at the same "
+    "index. Re-run m60482.pile.identify_variant() to reproduce; it costs ~8 KB."
 )
 
 # --------------------------------------------------------------------------------------

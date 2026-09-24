@@ -8,6 +8,7 @@ it is handed, and the bundle losing data across a save/load cycle.
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 from pathlib import Path
 
@@ -405,3 +406,88 @@ def test_sink_stability_refutes_when_profiles_actually_move():
 def test_sink_frozen_paper_is_judged_by_its_own_probe():
     assert PAP.BY_KEY["sink_frozen"].probes == ("sink_stability",)
     assert PAP.BY_KEY["attention_sinks"].probes == ("attention_sink",)
+
+
+# ---------------------------------------------------------------------------------
+# Pile access (offline arithmetic; the fetches are marked and skipped by default)
+# ---------------------------------------------------------------------------------
+
+from m60482 import pile  # noqa: E402
+
+network = pytest.mark.skipif(
+    not os.environ.get("M60482_NETWORK_TESTS"),
+    reason="set M60482_NETWORK_TESTS=1 to hit huggingface.co",
+)
+
+
+def test_corpus_arithmetic_is_exact():
+    """The whole 4 KB shortcut rests on this being exact, not approximate."""
+    assert pile.TOTAL_BYTES == 143_000 * 1024 * pile.SEQ_LEN * 2
+    assert pile.TOTAL_BYTES % pile.ROW_BYTES == 0
+    assert pile.N_ROWS == 143_000 * 1024
+    assert pile.ROW_BYTES == 4098
+
+
+def test_step_of_matches_the_frozen_anchor_step():
+    assert pile.step_of(C.ANCHOR_GLOBAL_SAMPLE_INDEX) == C.ANCHOR_TRAIN_STEP
+    assert C.CHECKPOINTS[1] < C.ANCHOR_TRAIN_STEP < C.CHECKPOINTS[2]
+
+
+def test_shard_boundaries_are_not_row_aligned():
+    """A row can straddle two shards, which is why fetch issues two requests."""
+    assert pile.SHARD_BYTES[0] % pile.ROW_BYTES != 0
+    shard, local = pile._locate(pile.SHARD_BYTES[0] - 10)
+    assert (shard, local) == (0, pile.SHARD_BYTES[0] - 10)
+    shard, local = pile._locate(pile.SHARD_BYTES[0])
+    assert (shard, local) == (1, 0)
+
+
+def test_out_of_range_index_is_rejected():
+    with pytest.raises(IndexError):
+        pile.fetch_training_row(pile.N_ROWS)
+    with pytest.raises(IndexError):
+        pile.fetch_training_row(-1)
+
+
+def test_check_anchor_rejects_a_wrong_row():
+    row = [0] * pile.SEQ_LEN
+    with pytest.raises(AssertionError):
+        pile.check_anchor(row)
+
+
+def test_check_anchor_accepts_a_synthetic_matching_row():
+    row = [0] * pile.SEQ_LEN
+    for pos, tok in zip(C.NAME_POSITIONS, C.NAME_TOKEN_IDS):
+        row[pos] = tok
+    row[C.ANCHOR_T] = C.TARGET_TOKEN_ID
+    row[C.SINK_POSITION_NEWLINE] = 187
+    pile.check_anchor(row)
+    ctx, target = pile.anchor_context_and_target(row)
+    assert len(ctx) == C.ANCHOR_T
+    assert target == C.TARGET_TOKEN_ID
+
+
+def test_the_variant_is_recorded_as_resolved():
+    assert C.MODEL_VARIANT == "pythia-1.4b"
+    assert "deduped" not in C.MODEL_ID
+    assert C.ANCHOR_IS_PILE_ROW_PREFIX is True
+
+
+@network
+def test_anchor_is_the_prefix_of_the_real_pile_sample():
+    ctx, target = pile.rebuild_anchor()
+    assert len(ctx) == C.ANCHOR_T
+    assert target == C.TARGET_TOKEN_ID
+    assert tuple(ctx[124:128]) == C.NAME_TOKEN_IDS
+
+
+@network
+def test_the_deduped_corpus_is_the_negative_control():
+    row = pile.fetch_training_row(C.ANCHOR_GLOBAL_SAMPLE_INDEX, repo=pile.DEDUPED_REPO)
+    with pytest.raises(AssertionError):
+        pile.check_anchor(row)
+
+
+@network
+def test_identify_variant_picks_exactly_one():
+    assert pile.identify_variant(verbose=False) == C.MODEL_VARIANT

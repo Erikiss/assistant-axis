@@ -21,7 +21,7 @@ Placebo-Grenzen. Läuft auf einer Colab-A100 in etwa 35–50 Minuten.
 
 | | |
 |---|---|
-| Modell | `EleutherAI/pythia-1.4b`, 24 Schichten, 16 Köpfe |
+| Modell | `EleutherAI/pythia-1.4b` (**nicht** `-deduped`, verifiziert), 24 Schichten, 16 Köpfe |
 | Checkpoints | step130000, step131000, step132000, step133000 |
 | Expositionsgrenze | 131000 → 132000 (Anker trainiert bei 131278) |
 | Placebo-Grenzen | 130000 → 131000 und 132000 → 133000 |
@@ -135,7 +135,8 @@ python -m m60482.run --reuse-bundle runs/<id>/bundle.npz --probes noise_floor co
 ### Tests
 
 ```bash
-pytest tests/ -q      # 29 Tests, keine GPU, kein Download, kein Netz
+pytest tests/ -q                          # 47 Tests, keine GPU, kein Download, kein Netz
+M60482_NETWORK_TESTS=1 pytest tests/ -q   # + 3 Tests gegen huggingface.co (~12 KB)
 ```
 
 ---
@@ -146,6 +147,7 @@ pytest tests/ -q      # 29 Tests, keine GPU, kein Download, kein Netz
 m60482/
   config.py            eingefrorene Fakten + Referenzwerte der früheren Läufe
   passages.py          laden, verifizieren, vier Herkunftsstufen
+  pile.py              den Anker exakt aus dem Pile holen (4 KB Range-Request)
   model.py             Checkpoint-Laden, fp32, eager attention, Determinismus
   measure.py           Bundle: alles, was ein Forward-Pass je Passage liefert
   aux.py               Trunkierungsleiter, Greedy-Fortsetzung, Namensersetzung, untrainiert
@@ -193,15 +195,77 @@ stellen sollte.
 
 ## Zwei technische Festlegungen, die keine Stilfragen sind
 
-**fp32, nicht fp16.** Bei step131000 liegen Ziel (0.09087) und Konkurrent `"/"` (0.08965)
-0.00122 auseinander, und die Schlagzeilen-Statistik ist ein *Rang*. In fp16 ist diese Ordnung
-nicht zuverlässig reproduzierbar. fp32-Gewichte sind ~5.7 GB; eine A100-40GB hat reichlich Platz.
+**fp32 mit TF32 aus.** Bei step131000 liegen Ziel (0.09087) und Konkurrent `"/"` (0.08965)
+0.00122 auseinander — ein Logit-Abstand von `ln(0.09087/0.08965) = 0.0135` nats. Bei realistischen
+Logit-Beträgen (|logit| ≈ 10–20) ist das **weniger als ein ulp in fp16 und weniger als ein ulp in
+bf16**, und etwa ein ulp in TF32. In fp32 mit TF32 aus sind es ~7000 ulp. Die
+Schlagzeilen-Statistik ist ein *Rang*; in den kleineren Formaten ist diese Ordnung nicht
+reproduzierbar. fp32-Gewichte sind ~5.7 GB; eine A100-40GB hat reichlich Platz.
+
+Batching verändert Logits übrigens auch — andere Batch-Formen wählen andere cuBLAS-Kernel und
+Reduktionsreihenfolgen —, aber in fp32 um ~1e-5, also rund 1000-fach unter dem Abstand. Der Rang
+kippt davon nicht. Die Messung läuft trotzdem ungebatcht: 69 × 207 Tokens sind billig genug,
+dass Batching nichts kauft, was das Risiko wert wäre.
 
 **`attn_implementation="eager"`.** Unter SDPA und FlashAttention gibt `output_attentions=True`
 stillschweigend `None` zurück. Dann fehlen die Attention-Zahlen, statt falsch zu sein — was
 schlimmer ist, weil es keinen Fehler auslöst. `model.forward_pass` prüft das und wirft.
 
 ---
+
+## Der Anker lässt sich exakt rekonstruieren
+
+`global_sample_index` ist suite-spezifisch, und die Architektur entscheidet nichts: Die Configs
+von `pythia-1.4b` und `pythia-1.4b-deduped` sind byteidentisch, und `tokenizer.json` hat auf
+beiden Repos und in jeder Revision denselben SHA-256. Nur die Datenreihenfolge unterscheidet sie.
+
+Die ist abfragbar. Der preshuffled-Korpus ist ein flaches `uint16`-Array aus
+143000 × 1024 Zeilen zu je 2049 Tokens, ohne Header und ohne Padding — die Arithmetik geht exakt
+auf:
+
+```
+143000 · 1024 · 2049 · 2 = 600 078 336 000 = Summe der 21 .bin-Shards
+600 078 336 000 / 4098   = 146 432 000     = 143000 · 1024      (ohne Rest)
+```
+
+Zeile *i* liegt also bei Byte *i* · 4098, und ein einzelner HTTP-Range-Request von 4098 Bytes
+holt sie. Kein 602-GB-Download, kein `.idx`.
+
+```python
+from m60482 import pile
+pile.identify_variant()   # -> 'pythia-1.4b'   (~8 KB)
+ctx, target = pile.rebuild_anchor()   # 207 Kontexttokens + 591
+```
+
+Ergebnis, nachgeprüft: In `pile-standard-pythia-preshuffled` trägt Zeile 134428942 die Namens-IDs
+auf 124–127, `" per"` auf 207, `"\n"` auf 46 und `" st"` auf 0 — der Text endet auf
+*„…wind speeds could reach approximately 74 km per hour."*. Im deduplizierten Korpus steht an
+derselben Stelle ein völlig anderes Dokument. Das ist die Variante, aus den Artefakten
+entschieden.
+
+Praktische Folge: **Der Anker ist `row[:207]`**, hängt also an keinem Drive-Ordner. Nur die
+40 Kontrollen brauchen noch die Seed-42-Ziehung aus `pile-uncopyrighted`.
+`passages.verify_anchor_against_pile()` prüft einen geladenen Satz dagegen.
+
+## Colab: der Platz, nicht die GPU
+
+Vier fp32-Checkpoints sind **22.6 GB** Safetensors im HF-Cache, und HuggingFace teilt
+Blobs zwischen Revisionen desselben Repos **nicht** — jedes `stepNNNNNN` ist eine
+vollständige Kopie. Auf Colab füllt sich die Platte vor der GPU, meist beim vierten
+Checkpoint, nachdem der Lauf schon vierzig Minuten gekostet hat.
+
+- Erste Zelle: `!df -h /`, und mindestens 30 GB frei verlangen.
+- `model.checkpoint(step, free_disk=True)` löscht die Revision nach Gebrauch.
+- `HF_HOME=/content/hf_home` setzen, damit der Cache dort liegt, wo man ihn sieht.
+- **Den HF-Cache niemals auf Drive zeigen lassen.** Freies Drive hat 15 GB und stirbt beim
+  dritten Checkpoint; es ist außerdem langsam für große sequentielle Schreibvorgänge. Drive
+  nur für die kleinen Ausgaben mounten: das Bundle (~90 MB für alle vier Checkpoints), den
+  Bericht, das Manifest.
+
+VRAM ist unkritisch: Gewichte 5.7 GB, Spitze bei Batchgröße 1 mit sofort reduzierter
+Attention etwa 7 GB. Der volle `[layer, head, T, T]`-Tensor ist 66.5 MB je Passage und wird
+innerhalb der Schleife auf die letzte Query-Zeile reduziert (312 KB je Passage); alle 69
+gleichzeitig zu behalten wären 4.6 GB und wäre sinnlos.
 
 ## Wenn die kanonischen Passagen fehlen
 
@@ -242,11 +306,10 @@ Aussage.
   Test der Entstehungsaussage. Sie zu bestätigen hieße, frühe Checkpoints zu messen
   (step1000–step10000), wo der Sink entstehen soll. Diese Suite misst vier Checkpoints um
   Schritt 130000.
-- `global_sample_index` ist suite-spezifisch. `pythia-1.4b` und `pythia-1.4b-deduped` haben
-  verschiedene Datenreihenfolgen, also bezeichnet Index 134428942 in beiden eine andere Sequenz.
-  Welche Suite den Anker erzeugt hat, entscheidet die Architektur nicht — beide Configs sind
-  byteidentisch.
-- Für Pythia-**1.4B** existiert öffentlich **kein** SAE (nur 70m, 160m, 410m, 1b, 2.8b), und
-  die vorhandenen sind für den finalen Checkpoint trainiert. Die Methode des Repeat-Curse-Papers
+- Für Pythia-**1.4B** existiert öffentlich **kein** brauchbares SAE. EleutherAIs eigene
+  `sparsify`-SAEs decken 70m, 70m-deduped, 160m, 160m-deduped und 410m ab — nichts bei 1B oder
+  1.4B. Zwei HuggingFace-Repos nennen `pythia-1.4b` im Namen und sind leere Hüllen (nur
+  `.gitattributes`, keine Gewichte). Die vorhandenen sind zudem auf dem finalen Checkpoint
+  trainiert. Die Methode des Repeat-Curse-Papers
   ist hier also nicht ausführbar; ein Final-Checkpoint-SAE auf ein step131000-Modell anzuwenden
   würde ein anderes Objekt messen.
