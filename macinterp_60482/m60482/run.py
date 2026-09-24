@@ -1,0 +1,145 @@
+"""The driver: resolve passages, measure, probe, report.
+
+Usable three ways -- as a Colab cell (``run.main([...])``), as a module
+(``python -m m60482.run --smoke``), and piecewise from a notebook.
+
+Resumability matters more than it looks: four fp32 Pythia checkpoints are a ~23 GB
+download, and a Colab session that dies at checkpoint four should not start again at
+checkpoint one.  The bundle is written once and every probe run afterwards reads it
+from disk.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+import time
+from pathlib import Path
+from typing import Sequence
+
+from . import config as C
+from . import passages as P
+from . import registry, report
+from .measure import Bundle, measure, verify_against_reference
+
+DEFAULT_ROOTS = (
+    "/content/drive/MyDrive/Colab_Pythia_Results",
+    "/content/pythia_attn_runtime",
+    ".",
+)
+
+
+def make_run_id(stamp: str | None = None) -> str:
+    return stamp or time.strftime("%Y%m%d_%H%M%S")
+
+
+def build_bundle(
+    cfg: C.RunConfig,
+    *,
+    passages_path: str | None = None,
+    roots: Sequence[str] = DEFAULT_ROOTS,
+    allow_synthetic: bool = False,
+    cache: Path | None = None,
+) -> Bundle:
+    """Measure, or load a previously measured bundle from ``cache``."""
+    if cache and cache.exists():
+        print(f"reusing bundle: {cache}", flush=True)
+        return Bundle.load(cache)
+
+    ps = P.resolve(passages_path, roots, allow_synthetic=allow_synthetic)
+    bundle = measure(ps, cfg)
+    if cache:
+        bundle.save(cache)
+        print(f"bundle written: {cache}", flush=True)
+    return bundle
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(
+        prog="m60482",
+        description="Test published mechanisms against the Pythia-1.4B state-60482 effect.",
+    )
+    ap.add_argument("--passages", default=None, help="explicit path to passagen.json")
+    ap.add_argument("--roots", nargs="*", default=list(DEFAULT_ROOTS))
+    ap.add_argument("--output", default="runs", help="output directory")
+    ap.add_argument("--run-id", default=None)
+    ap.add_argument("--dtype", default="float32", choices=["float32", "bfloat16", "float16"])
+    ap.add_argument("--device", default="cuda")
+    ap.add_argument("--top-k", type=int, default=50)
+    ap.add_argument("--checkpoints", default=",".join(str(c) for c in C.CHECKPOINTS))
+    ap.add_argument("--probes", nargs="*", default=[], help="subset of probes; default all")
+    ap.add_argument("--no-attention", action="store_true", help="skip attention capture")
+    ap.add_argument(
+        "--allow-synthetic",
+        action="store_true",
+        help="run on a meaningless passage set when none is found (pipeline test only)",
+    )
+    ap.add_argument(
+        "--smoke",
+        action="store_true",
+        help="synthetic passages, no model, no GPU: exercise probes on a fake bundle",
+    )
+    ap.add_argument("--reuse-bundle", default=None, help="path to an existing bundle .npz")
+    args = ap.parse_args(argv)
+
+    run_id = make_run_id(args.run_id)
+    out_dir = Path(args.output) / run_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.smoke:
+        from .synthetic_bundle import fake_bundle
+
+        print("SMOKE RUN: synthetic bundle, no model loaded. Numbers are meaningless.")
+        bundle = fake_bundle()
+    else:
+        cfg = C.RunConfig(
+            checkpoints=tuple(int(x) for x in args.checkpoints.split(",")),
+            dtype=args.dtype,
+            device=args.device,
+            top_k=args.top_k,
+            capture_attention=not args.no_attention,
+            output_dir=str(out_dir),
+            run_id=run_id,
+            probes=tuple(args.probes),
+        )
+        cache = Path(args.reuse_bundle) if args.reuse_bundle else out_dir / "bundle.npz"
+        bundle = build_bundle(
+            cfg,
+            passages_path=args.passages,
+            roots=args.roots,
+            allow_synthetic=args.allow_synthetic,
+            cache=cache,
+        )
+
+        check = verify_against_reference(bundle)
+        if check.get("checked"):
+            status = "matches" if check["all_ok"] else "DIFFERS FROM"
+            print(f"\nreproduction check: this run {status} the earlier measurement")
+            for row in check["rows"]:
+                flag = "ok" if row["ok"] else "!!"
+                print(
+                    f"  {flag} step{row['step']} {row['quantity']}: "
+                    f"got {row['got']}, expected {row['expected']}"
+                )
+            if not check["all_ok"]:
+                print(
+                    "\n  A mismatch means this run is measuring a different object "
+                    "(model variant, dtype or passage set). Probe results below are "
+                    "about that object, not about the original finding.\n"
+                )
+
+    print("\nrunning probes\n" + "-" * 60)
+    results = registry.run(bundle, tuple(args.probes))
+
+    paths = report.save(bundle, results, out_dir)
+    adj = report.adjudicate(results)
+    print("\n" + "=" * 60)
+    print(adj["headline"])
+    print("=" * 60)
+    print(f"report:  {paths['report']}")
+    print(f"results: {paths['results']}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
