@@ -34,12 +34,17 @@ Placebo-Grenzen. Läuft auf einer Colab-A100 in etwa 35–50 Minuten.
 
 Diese Zahlen sind in `m60482/config.py` eingefroren; ein neuer Lauf wird gegen sie geprüft.
 
-| Checkpoint | p(` per`) | Rang | Top-1 |
-|---|---|---|---|
-| 130000 | 0.09402 | 3 | `ph` 0.726 |
-| 131000 | 0.09087 | **2** | `ph` 0.798 |
-| 132000 | 0.10461 | 3 | `ph` 0.744 |
-| 133000 | 0.10833 | 3 | `ph` 0.638 |
+| Checkpoint | p(` per`) | Rang | Abstand zum Nachbarn | Top-1 |
+|---|---|---|---|---|
+| 130000 | 0.09402 | 3 | 0.0528 (56 %) | `ph` 0.726 |
+| 131000 | 0.09087 | **2** | **0.00122 (1.3 %)** | `ph` 0.798 |
+| 132000 | 0.10461 | 3 | 0.0120 (11 %) | `ph` 0.744 |
+| 133000 | 0.10833 | 3 | 0.0961 (89 %) | `ph` 0.638 |
+
+Der einzige Checkpoint, an dem das Ziel Rang 2 hielt, ist zugleich der einzige mit einem
+hauchdünnen Abstand — 1.3 % seiner eigenen Wahrscheinlichkeit. Ein Rang ohne seinen Abstand ist
+keine Messung (arXiv:2411.00640); `aux.measure_jitter` misst die Lauf-zu-Lauf-Streuung, und
+`rank_attribution` erklärt einen Rang für **unaufgelöst**, wenn der Abstand darunter liegt.
 
 Drei Dinge fallen daran auf, und sie tragen das ganze Projekt:
 
@@ -173,7 +178,7 @@ was er schon gemessen hat.
 ### Tests
 
 ```bash
-pytest tests/ -q                          # 55 Tests, keine GPU, kein Download, kein Netz
+pytest tests/ -q                          # 60 Tests, keine GPU, kein Download, kein Netz
 M60482_NETWORK_TESTS=1 pytest tests/ -q   # + 3 Tests gegen huggingface.co (~12 KB)
 ```
 
@@ -225,6 +230,7 @@ stellen sollte.
 | # | Probe | Frage |
 |---|---|---|
 | 10 | `memorization_entry` | Ist das Ziel je die Greedy-Fortsetzung? |
+| 12 | `multiplicity_ledger` | Wie viele der 19 States zeigen das Muster, und wie viele sollten es zufällig? |
 | 15 | `noise_floor` | Überschreitet die Änderung das Checkpoint-Rauschen? |
 | 18 | `softmax_renormalization` | Überlebt der Effekt die Messung als Logit-Kontrast? |
 | 20 | `rank_attribution` | Bewegte sich das Ziel oder sein Konkurrent? |
@@ -335,9 +341,15 @@ Aussage.
 
 ## Grenzen, unabhängig vom Ergebnis
 
-- Mit 40 Kontrollen ist der kleinste erreichbare p-Wert **1/41 = 0.0244**. Nach Korrektur für
-  die Zahl der Proben ist hier nichts signifikant. Das ist eine Eigenschaft des Designs, nicht
-  der Daten.
+- Mit 40 Kontrollen ist der kleinste erreichbare p-Wert **1/41 = 0.0244**. 19 States × 3 Grenzen
+  sind 57 Vergleiche; Bonferroni verlangt dafür α = 0.00088. **Der Boden liegt 28-fach darüber.**
+  In diesem Design kann kein Ergebnis eine Korrektur überleben — das ist eine Eigenschaft des
+  Designs, nicht der Daten, und keine Sorgfalt in der Auswertung repariert es. Nur mehr
+  Kontrollen oder ein einziger vorregistrierter Vergleich würden es.
+- Unter der Nullhypothese landet die größte der drei Grenzänderungen eines States mit
+  Wahrscheinlichkeit 1/3 auf seiner Expositionsgrenze. Bei 19 States sind das ~6.3 erwartete
+  Treffer und P(mindestens einer) ≈ 1.0. Ein State, der **ausgewählt wurde, weil** er dieses
+  Muster zeigt, belegt damit zunächst nichts.
 - Drei Grenzen, eine davon die Expositionsgrenze: Die beiden Placebo-Grenzen sind die gesamte
   Nullverteilung. „Außerhalb des Placebo-Bereichs" heißt „außerhalb eines aus zwei Zahlen
   geschätzten Bereichs".

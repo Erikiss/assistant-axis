@@ -15,6 +15,7 @@ from . import (  # noqa: F401
     ctx_nll_structure,
     focus_directions,
     memorization_entry,
+    multiplicity,
     name_variants,
     noise_floor,
     norm_attribution,

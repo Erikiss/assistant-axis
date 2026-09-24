@@ -92,6 +92,46 @@ def rank_attribution(bundle: Bundle) -> ProbeResult:
     direction_conflict = (r_hi > r_lo and p_hi > p_lo) or (r_hi < r_lo and p_hi < p_lo)
     bigger_crossers = [c for c in crossers if abs(c["delta_logp"]) > abs(dlp_tgt)]
 
+    # A rank without its margin is not a measurement. Report how much probability was
+    # actually separating the target from its neighbours, and whether that gap is
+    # larger than the run-to-run jitter -- when the jitter has been measured.
+    jitter = (bundle.aux or {}).get("jitter_band")
+
+    def margin_at(c_i: int) -> dict:
+        probs = bundle.topk_probs[c_i, a_i]
+        ids = bundle.topk_ids[c_i, a_i]
+        where = np.flatnonzero(ids == tgt)
+        if not where.size:
+            return {"gap_above": float("nan"), "gap_below": float("nan")}
+        j = int(where[0])
+        p_here = float(probs[j])
+        above = float(probs[j - 1]) - p_here if j > 0 else float("inf")
+        below = p_here - float(probs[j + 1]) if j + 1 < probs.size else float("inf")
+        return {
+            "p_target": p_here,
+            "gap_above": above,
+            "gap_below": below,
+            "nearest_gap": min(above, below),
+            "relative_nearest_gap": min(above, below) / p_here if p_here > 0 else float("nan"),
+        }
+
+    margins = []
+    for step in bundle.checkpoints:
+        m = margin_at(bundle.ci(step))
+        row = {
+            "checkpoint": step,
+            "rank": int(bundle.target_rank[bundle.ci(step), a_i]),
+            **{k: v for k, v in m.items()},
+        }
+        if jitter is not None:
+            row["jitter_band"] = float(jitter)
+            row["rank_resolved"] = bool(m.get("nearest_gap", 0) > float(jitter))
+        margins.append(row)
+
+    unresolved = [
+        m["checkpoint"] for m in margins if m.get("rank_resolved") is False
+    ]
+
     if r_lo == r_hi:
         verdict = "INCONCLUSIVE"
         summary = f"The target's rank did not change ({r_lo} -> {r_hi}); nothing to attribute."
@@ -118,6 +158,22 @@ def rank_attribution(bundle: Bundle) -> ProbeResult:
             f"crossed it; the rank change tracks the target."
         )
 
+    margin_note = (
+        f" The rank was held by a margin of {margins[bundle.ci(lo)]['nearest_gap']:.5f} "
+        f"at step{lo} ({margins[bundle.ci(lo)]['relative_nearest_gap'] * 100:.1f}% of "
+        "the target's own probability)"
+        + (
+            f", against a measured run-to-run jitter of {float(jitter):.5f}"
+            + (
+                f" -- the rank is UNRESOLVED at step(s) {unresolved}."
+                if unresolved else ", so the rank is resolved."
+            )
+            if jitter is not None
+            else "; no jitter band has been measured, so whether that margin is "
+                 "resolvable is unknown (see m60482.aux.measure_jitter)."
+        )
+    )
+
     return ProbeResult(
         probe="rank_attribution",
         paper="(decomposition)",
@@ -125,16 +181,22 @@ def rank_attribution(bundle: Bundle) -> ProbeResult:
         question="Did the target move, or did the tokens it is ranked against move?",
         verdict=verdict,
         decision_rule=RULE,
-        summary=summary,
+        summary=summary + margin_note,
         evidence={
             "rank_before": r_lo, "rank_after": r_hi,
+            "margins": margins,
+            "jitter_band": float(jitter) if jitter is not None else None,
+            "unresolved_checkpoints": unresolved,
             "p_before": p_lo, "p_after": p_hi,
             "dlogp_target": dlp_tgt,
             "crossers": crossers,
             "crossers_larger_than_target": [c["token"] for c in bigger_crossers],
             "direction_conflict": bool(direction_conflict),
         },
-        tables={f"top-of-distribution movement, {lo} -> {hi}": rows[:15]},
+        tables={
+            f"top-of-distribution movement, {lo} -> {hi}": rows[:15],
+            "rank margins per checkpoint": margins,
+        },
         cannot_conclude=(
             "It says the rank statistic is the wrong instrument here; it does not say "
             "the target's own probability change is noise. That is the noise_floor "
@@ -145,5 +207,9 @@ def rank_attribution(bundle: Bundle) -> ProbeResult:
             "overstates the log-probability change for anything that entered or left "
             "the top-k. Crossers near the target are unaffected, since they are in the "
             "top-k at both checkpoints by construction.",
+            "A rank reported without its margin is not a measurement (Miller 2024, "
+            "arXiv:2411.00640). The margins table is the margin; a rank whose nearest "
+            "gap is inside the run-to-run jitter band should be read as unresolved, "
+            "not as a value.",
         ],
     )

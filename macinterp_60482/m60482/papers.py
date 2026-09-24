@@ -238,6 +238,22 @@ PAPERS: tuple[Paper, ...] = (
         probes={"noise_floor": 1, "rank_attribution": 1, "ctx_nll_structure": 1},
         kind="premise",
     ),
+    Paper(
+        key="multiplicity",
+        title="With Little Power Come Great Responsibilities",
+        citation="arXiv:2010.06595",
+        date="2020-11",
+        on_user_list=False,
+        surfaced_because=(
+            "19 states x 3 boundaries is 57 comparisons, and the anchor was chosen "
+            "after looking. Under the null a state's largest change lands on its "
+            "exposure boundary one time in three, so about six of the nineteen should "
+            "show the anchor's pattern with nothing having happened to any of them. "
+            "Nothing in the original analysis accounted for that."
+        ),
+        probes={"multiplicity_ledger": 1},
+        kind="premise",
+    ),
 )
 
 BY_KEY = {p.key: p for p in PAPERS}

@@ -366,3 +366,83 @@ def measure_norm_attribution(
         "norm_attn_steps": list(steps),
         "norm_attn_names": [p.name for p in passages],
     }
+
+
+def measure_jitter(
+    passage_set: PassageSet,
+    cfg: C.RunConfig,
+    *,
+    step: int | None = None,
+    batch_sizes: Sequence[int] = (1, 4, 8),
+    repeats: int = 3,
+    progress: bool = True,
+) -> dict:
+    """How much does p(target) move when nothing that should matter changes?
+
+    A rank reported without its margin is not a measurement (Miller 2024,
+    arXiv:2411.00640).  At step131000 the anchor held rank 2 by
+    ``p(" per") - p("/") = 0.00122`` -- 1.3% of its own probability, and the smallest
+    margin at any checkpoint.  Whether that rank is a fact or a coin flip depends on a
+    number nobody measured: the run-to-run spread.
+
+    So this varies only things that should be irrelevant -- batch size, the anchor's
+    position within the batch, repeated identical calls -- and reports the spread of
+    p(target).  Anything at or below that spread is not resolved.
+
+    Padding is deliberately avoided: every passage has the same length, so a batch is
+    a clean stack and the only thing changing is the reduction order inside cuBLAS.
+    """
+    import torch
+
+    step = step or C.EXPOSURE_BOUNDARY[0]
+    anchor = passage_set.anchor
+    others = [p for p in passage_set.passages if p.name != anchor.name]
+
+    observations: list[dict] = []
+    if progress:
+        print(f"[aux] jitter band at step{step}", flush=True)
+
+    with M.checkpoint(
+        step, model_id=cfg.model_id, dtype=cfg.dtype,
+        device=cfg.device, need_attention=False,
+        free_disk=bool(cfg.extra.get("free_disk")),
+    ) as ckpt:
+        for bs in batch_sizes:
+            for slot in range(bs):
+                for rep in range(repeats):
+                    rows = [anchor.ids] * bs
+                    for j in range(bs):
+                        if j != slot:
+                            rows[j] = others[(j + rep) % len(others)].ids
+                    ids = torch.tensor(rows, dtype=torch.long, device=ckpt.device)
+                    with torch.inference_mode():
+                        out = ckpt.model(ids, output_attentions=False, use_cache=False)
+                    probs = torch.softmax(out.logits[slot, -1].to(torch.float32), dim=-1)
+                    observations.append(
+                        {
+                            "batch_size": bs,
+                            "slot": slot,
+                            "repeat": rep,
+                            "p_target": float(probs[anchor.target].item()),
+                            "top1_id": int(torch.argmax(probs).item()),
+                        }
+                    )
+
+    ps = np.asarray([o["p_target"] for o in observations], dtype=np.float64)
+    band = float(ps.max() - ps.min())
+
+    return {
+        "jitter_band": band,
+        "jitter_step": step,
+        "jitter_n": len(observations),
+        "jitter_mean": float(ps.mean()),
+        "jitter_sd": float(ps.std(ddof=1)) if ps.size > 1 else 0.0,
+        "jitter_min": float(ps.min()),
+        "jitter_max": float(ps.max()),
+        "jitter_observations": observations,
+        "jitter_note": (
+            "Spread of p(target) across batch sizes, batch positions and repeated "
+            "identical calls at one checkpoint. Only the reduction order inside cuBLAS "
+            "differs. A rank margin at or below this band is not resolved."
+        ),
+    }

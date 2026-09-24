@@ -73,6 +73,8 @@ def build_bundle(
         stages.append(("untrained baseline", lambda p: A.untrained_attention(p, cfg)))
     if norm_attn and "norm_attn" not in bundle.aux:
         stages.append(("norm-weighted attention", lambda p: A.measure_norm_attribution(p, cfg)))
+    if aux and "jitter_band" not in bundle.aux:
+        stages.append(("run-to-run jitter band", lambda p: A.measure_jitter(p, cfg)))
 
     if stages and ps is None:
         ps = P.resolve(passages_path, roots, allow_synthetic=allow_synthetic, verbose=False)

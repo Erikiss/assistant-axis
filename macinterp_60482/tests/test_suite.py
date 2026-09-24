@@ -574,3 +574,57 @@ def test_softmax_probe_runs_before_the_mechanistic_ones():
     order = [p.name for p in registry.all_probes()]
     assert order.index("softmax_renormalization") < order.index("attention_sink")
     assert order.index("softmax_renormalization") < order.index("rank_attribution")
+
+
+# ---------------------------------------------------------------------------------
+# multiplicity and rank margins
+# ---------------------------------------------------------------------------------
+
+
+def test_multiplicity_ledger_reports_the_uncorrectable_floor():
+    """57 comparisons need alpha = 0.00088; the floor with 40 controls is 0.024. No
+    result in this design survives correction, and the report has to say so."""
+    r = registry.get("multiplicity_ledger")(fake_bundle())
+    e = r.evidence
+    assert e["n_states"] == C.N_STATES
+    assert e["n_boundaries"] == C.N_BOUNDARIES
+    assert e["expected_by_chance"] == pytest.approx(C.N_STATES / C.N_BOUNDARIES)
+    assert e["p_at_least_one_by_chance"] > 0.99
+    assert e["attainable_p_floor"] == pytest.approx(C.MIN_ATTAINABLE_P)
+    assert e["floor_survives_correction"] is False
+    assert "corrected alpha" in r.cannot_conclude
+
+
+def test_multiplicity_ledger_runs_before_the_mechanistic_probes():
+    order = [p.name for p in registry.all_probes()]
+    assert order.index("multiplicity_ledger") < order.index("attention_sink")
+
+
+def test_rank_margins_expose_the_fragile_checkpoint():
+    """The only checkpoint where the target held rank 2 is also the only one where its
+    margin was marginal."""
+    r = registry.get("rank_attribution")(fake_bundle())
+    by_step = {m["checkpoint"]: m for m in r.evidence["margins"]}
+    assert by_step[131000]["rank"] == 2
+    assert by_step[131000]["nearest_gap"] == pytest.approx(0.00122, abs=1e-5)
+    assert by_step[131000]["relative_nearest_gap"] < 0.02
+    for step in (130000, 132000, 133000):
+        assert by_step[step]["relative_nearest_gap"] > 0.1
+
+
+def test_rank_resolution_needs_a_jitter_band():
+    b = fake_bundle()
+    b.aux.pop("jitter_band")
+    r = registry.get("rank_attribution")(b)
+    assert r.evidence["jitter_band"] is None
+    assert "no jitter band has been measured" in r.summary
+    assert r.evidence["unresolved_checkpoints"] == []
+
+
+def test_a_large_jitter_band_marks_the_rank_unresolved():
+    """In fp16 the jitter would swamp the 0.00122 margin, and the probe must say so."""
+    b = fake_bundle()
+    b.aux["jitter_band"] = 0.01
+    r = registry.get("rank_attribution")(b)
+    assert 131000 in r.evidence["unresolved_checkpoints"]
+    assert "UNRESOLVED" in r.summary

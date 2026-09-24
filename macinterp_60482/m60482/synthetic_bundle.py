@@ -264,6 +264,13 @@ def _fake_aux(rng, names, kinds, idx, target_p, T) -> dict:
         for c_i, step in enumerate(C.CHECKPOINTS)
     }
     return {
+        # fp32 with TF32 off: batch-order effects land around 1e-5 on a probability,
+        # which is below the 0.00122 margin the rank-2 claim rests on. A guess about
+        # the real measurement, and labelled as one.
+        "jitter_band": 2.0e-5,
+        "jitter_step": C.EXPOSURE_BOUNDARY[0],
+        "jitter_n": 0,
+        "jitter_note": "SYNTHETIC: not a measurement.",
         "ladder": arr,
         "ladder_k": ladder_k,
         "ladder_names": list(names),
