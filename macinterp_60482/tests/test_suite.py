@@ -283,3 +283,46 @@ def test_report_writes_both_files():
         payload = json.loads(paths["results"].read_text())
     assert payload["adjudication"]["n_probes"] == len(results)
     assert "vocab" not in payload["meta"]
+
+
+# ---------------------------------------------------------------------------------
+# untrained baseline (the comparison the position-bias paper is actually stated over)
+# ---------------------------------------------------------------------------------
+
+
+def _with_untrained(b, shuffle: bool = False):
+    """Attach an untrained sweep to a bundle, optionally in a different passage order."""
+    rng = np.random.default_rng(1)
+    prof = rng.random((len(b.names), C.N_LAYERS, C.ANCHOR_T)).astype(np.float32)
+    prof /= prof.sum(axis=-1, keepdims=True)
+    names = list(b.names)
+    if shuffle:
+        order = list(rng.permutation(len(names)))
+        prof = prof[order]
+        names = [names[i] for i in order]
+    b.aux["untrained_attn_last"] = prof
+    b.aux["untrained_names"] = names
+    return b
+
+
+def test_position_bias_uses_the_untrained_baseline_when_present():
+    b = _with_untrained(fake_bundle())
+    r = registry.get("position_bias")(b)
+    assert r.evidence["untrained_baseline_measured"] is True
+    assert r.evidence["median_trained_vs_untrained_spearman"] is not None
+    assert "untrained baseline was measured" in r.cannot_conclude
+
+
+def test_position_bias_pairs_passages_with_their_own_untrained_curve():
+    """Order-independence: shuffling the untrained sweep must not change the result."""
+    a = registry.get("position_bias")(_with_untrained(fake_bundle()))
+    c = registry.get("position_bias")(_with_untrained(fake_bundle(), shuffle=True))
+    assert a.evidence["median_trained_vs_untrained_spearman"] == pytest.approx(
+        c.evidence["median_trained_vs_untrained_spearman"]
+    )
+
+
+def test_position_bias_says_what_is_missing_without_the_baseline():
+    r = registry.get("position_bias")(fake_bundle())
+    assert r.evidence["untrained_baseline_measured"] is False
+    assert "untrained_attention" in r.cannot_conclude

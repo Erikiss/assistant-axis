@@ -131,27 +131,30 @@ def position_bias(bundle: Bundle) -> ProbeResult:
     if untrained is not None:
         u = np.asarray(untrained)
         u_names = list((bundle.aux or {}).get("untrained_names", names))
-        u_curves = []
-        for nm in names:
-            if nm not in u_names:
-                continue
-            prof = u[u_names.index(nm)]
-            part = np.partition(prof, -2, axis=1)[:, -2:]
-            u_curves.append(part.sum(axis=1))
-        if u_curves:
-            u_curves = np.stack(u_curves)
+        # Pair each passage with its OWN untrained curve. Keeping the two index lists
+        # explicit matters: a partially-measured untrained sweep would otherwise
+        # silently correlate passage i's trained curve with passage j's untrained one.
+        paired = [(names.index(nm), u_names.index(nm)) for nm in names if nm in u_names]
+        if paired:
+            t_idx = [t for t, _ in paired]
+            u_idx = [v for _, v in paired]
+            u_curves = np.stack([
+                np.partition(u[v], -2, axis=1)[:, -2:].sum(axis=1) for v in u_idx
+            ])
             ru = np.stack([rank(c) for c in u_curves])
             ru = ru - ru.mean(axis=1, keepdims=True)
-            # correlate each passage's trained curve with its own untrained curve
-            rt = rc[: len(u_curves)]
+            rt = rc[t_idx]
             num = (rt * ru).sum(axis=1)
             den = np.sqrt((rt ** 2).sum(axis=1) * (ru ** 2).sum(axis=1))
             per_passage = num / np.where(den == 0, np.nan, den)
             untrained_rho = float(np.nanmedian(per_passage))
+            anchor_row = t_idx.index(a_i) if a_i in t_idx else None
             untrained_rows = [
                 {"layer": l,
                  "trained_concentration": float(curves[a_i, l]),
-                 "untrained_concentration": float(u_curves[0, l]) if u_curves.size else float("nan")}
+                 "untrained_concentration": (
+                     float(u_curves[anchor_row, l]) if anchor_row is not None else float("nan")
+                 )}
                 for l in range(curves.shape[1])
             ]
 
