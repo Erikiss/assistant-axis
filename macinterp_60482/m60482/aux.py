@@ -212,6 +212,40 @@ def untrained_attention(
     }
 
 
+def _decoder_layers(model):
+    """The transformer block list, whatever this transformers version calls it."""
+    for attr in ("gpt_neox", "model", "transformer"):
+        base = getattr(model, attr, None)
+        if base is not None and hasattr(base, "layers"):
+            return base.layers
+        if base is not None and hasattr(base, "h"):
+            return base.h
+    raise RuntimeError(
+        "cannot find the decoder layer list on this model. The norm-attribution probe "
+        "needs it to hook the QKV projection; check the transformers version."
+    )
+
+
+def _qkv_module(layer, i: int):
+    """The fused query/key/value projection of one block.
+
+    Named ``query_key_value`` in the GPT-NeoX implementation. If a future transformers
+    version splits Q, K and V into separate projections, this raises rather than
+    guessing -- a wrong module would yield plausible numbers from the wrong tensor.
+    """
+    attn = getattr(layer, "attention", None) or getattr(layer, "attn", None)
+    if attn is None:
+        raise RuntimeError(f"layer {i}: no attention submodule")
+    qkv = getattr(attn, "query_key_value", None)
+    if qkv is None:
+        raise RuntimeError(
+            f"layer {i}: no fused query_key_value projection. This transformers version "
+            "does not use the GPT-NeoX fused QKV layout, and the value split this probe "
+            "performs would be reading the wrong tensor."
+        )
+    return qkv
+
+
 def _neox_value_states(ckpt, ids: Sequence[int]):
     """Per-layer value vectors for one passage, ``[layer, head, T, head_dim]``.
 
@@ -226,7 +260,7 @@ def _neox_value_states(ckpt, ids: Sequence[int]):
     import torch
 
     model = ckpt.model
-    layers = model.gpt_neox.layers
+    layers = _decoder_layers(model)
     captured: list = [None] * len(layers)
     handles = []
 
@@ -236,7 +270,7 @@ def _neox_value_states(ckpt, ids: Sequence[int]):
         return hook
 
     for i, layer in enumerate(layers):
-        handles.append(layer.attention.query_key_value.register_forward_hook(make_hook(i)))
+        handles.append(_qkv_module(layer, i).register_forward_hook(make_hook(i)))
 
     try:
         inp = torch.tensor([list(ids)], dtype=torch.long, device=ckpt.device)

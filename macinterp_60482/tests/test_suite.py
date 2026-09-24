@@ -491,3 +491,44 @@ def test_the_deduped_corpus_is_the_negative_control():
 @network
 def test_identify_variant_picks_exactly_one():
     assert pile.identify_variant(verbose=False) == C.MODEL_VARIANT
+
+
+# ---------------------------------------------------------------------------------
+# module lookup for the QKV hook (pure attribute walking; no torch needed)
+# ---------------------------------------------------------------------------------
+
+from m60482 import aux as A  # noqa: E402
+
+
+class _Fake:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+def test_decoder_layers_found_under_gpt_neox():
+    m = _Fake(gpt_neox=_Fake(layers=["a", "b"]))
+    assert A._decoder_layers(m) == ["a", "b"]
+
+
+def test_decoder_layers_found_under_alternative_names():
+    assert A._decoder_layers(_Fake(model=_Fake(layers=[1]))) == [1]
+    assert A._decoder_layers(_Fake(transformer=_Fake(h=[1, 2]))) == [1, 2]
+
+
+def test_decoder_layers_raises_rather_than_guessing():
+    with pytest.raises(RuntimeError, match="decoder layer list"):
+        A._decoder_layers(_Fake(something_else=1))
+
+
+def test_qkv_module_requires_the_fused_projection():
+    """A split Q/K/V layout must raise: reading the wrong tensor would produce
+    plausible numbers from the query projection."""
+    fused = _Fake(attention=_Fake(query_key_value="QKV"))
+    assert A._qkv_module(fused, 0) == "QKV"
+
+    split = _Fake(attention=_Fake(q_proj="Q", k_proj="K", v_proj="V"))
+    with pytest.raises(RuntimeError, match="fused query_key_value"):
+        A._qkv_module(split, 3)
+
+    with pytest.raises(RuntimeError, match="no attention submodule"):
+        A._qkv_module(_Fake(mlp=1), 7)

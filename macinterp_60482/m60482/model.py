@@ -352,10 +352,14 @@ def load_untrained(
 
     torch.manual_seed(seed)
     cfg = AutoConfig.from_pretrained(model_id)
-    kwargs = {"torch_dtype": getattr(torch, dtype)}
     if need_attention:
-        kwargs["attn_implementation"] = "eager"
-    model = AutoModelForCausalLM.from_config(cfg, **kwargs)
+        # from_config does not accept attn_implementation in every transformers
+        # version; setting it on the config works in all of them.
+        cfg._attn_implementation = "eager"
+    try:
+        model = AutoModelForCausalLM.from_config(cfg, torch_dtype=getattr(torch, dtype))
+    except TypeError:
+        model = AutoModelForCausalLM.from_config(cfg).to(getattr(torch, dtype))
     model.eval()
     model.to(device)
 
