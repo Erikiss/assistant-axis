@@ -11,6 +11,7 @@ mechanistic probes are answering a question nobody should be asking.
 
 from . import (  # noqa: F401
     attention_sink,
+    closed_slot,
     context_dependence,
     ctx_nll_structure,
     focus_directions,

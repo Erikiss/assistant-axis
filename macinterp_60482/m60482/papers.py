@@ -104,13 +104,18 @@ PAPERS: tuple[Paper, ...] = (
     Paper(
         key="lost_middle_birth",
         title="Lost in the Middle at Birth: An Exact Theory of Transformer Position Bias",
-        citation="2026 (see notes; verify before citing)",
+        citation="arXiv:2603.10123 (Chowdhury; preprint, not peer-reviewed)",
         date="2026-03-10",
         on_user_list=True,
         surfaced_because=(
-            "It derives position bias from architecture alone and finds it in untrained "
-            "models -- i.e. before any exposure could have mattered. Of the six, this is "
-            "the only one whose scope conditions the 60482 setup actually meets."
+            "It derives position bias from architecture alone and validates it on "
+            "untrained Qwen2 and GPT-2 at step 0 -- before any exposure could have "
+            "mattered, and identically with or without RoPE. Of the six, this is the "
+            "only one whose scope conditions the 60482 setup actually meets. Two "
+            "cautions for anyone citing it: it is a single-author preprint with no "
+            "peer review, and a public thread disputes the derivation. Its empirical "
+            "claim is replicable here regardless of whether its theory holds, which is "
+            "what position_bias tests."
         ),
         probes={"position_bias": 1},
     ),
@@ -236,6 +241,22 @@ PAPERS: tuple[Paper, ...] = (
             "between two checkpoints when nothing happened."
         ),
         probes={"noise_floor": 1, "rank_attribution": 1, "ctx_nll_structure": 1},
+        kind="premise",
+    ),
+    Paper(
+        key="closed_slot",
+        title="(no paper) the tokenizer offers three entry points to one unit slot",
+        citation="—",
+        date="—",
+        on_user_list=False,
+        surfaced_because=(
+            "After ' 74 km' English writes the unit three ways -- kmph, km/h, "
+            "km per hour -- and the tokenizer's entry points to them are exactly the "
+            "top three continuations. They sum to 0.967 +- 0.009 across the four "
+            "checkpoints while their members swing by up to 0.16. The effect lives "
+            "entirely inside that budget."
+        ),
+        probes={"closed_slot": 1},
         kind="premise",
     ),
     Paper(

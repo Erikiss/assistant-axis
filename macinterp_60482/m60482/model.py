@@ -42,9 +42,32 @@ def set_determinism(seed: int = 0) -> None:
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
-    # TF32 changes the low bits of every matmul.  Off, or fp32 buys us nothing.
-    torch.backends.cuda.matmul.allow_tf32 = False
-    torch.backends.cudnn.allow_tf32 = False
+    # TF32 changes the low bits of every matmul, and a TF32 ulp is about the size of
+    # the logit gap this study reads. Turning it off is the point of running fp32 at
+    # all, so it is set in both spellings -- `allow_tf32` is deprecated in torch 2.9 in
+    # favour of `fp32_precision` -- and then read back. A silently-ignored assignment
+    # here would not fail; it would just quietly return numbers at the wrong precision.
+    for mod in (torch.backends.cuda.matmul, torch.backends.cudnn):
+        for attr, value in (("allow_tf32", False), ("fp32_precision", "ieee")):
+            try:
+                if hasattr(mod, attr):
+                    setattr(mod, attr, value)
+            except (RuntimeError, ValueError):
+                pass
+
+    still_on = [
+        name
+        for name, mod in (("matmul", torch.backends.cuda.matmul), ("cudnn", torch.backends.cudnn))
+        if getattr(mod, "allow_tf32", False) is True
+    ]
+    if still_on:
+        raise RuntimeError(
+            f"TF32 is still enabled for {still_on} after being switched off. One TF32 "
+            "ulp is about the size of the logit gap this study reads, so the run would "
+            "return numbers at the wrong precision without failing. Check the torch "
+            "version's backend API."
+        )
+
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
@@ -159,39 +182,51 @@ def load_checkpoint(
     )
 
 
-def _snapshot_dir(step: int, model_id: str, cache_dir: str | None) -> "Path | None":
-    """Where huggingface_hub put this revision's files, if it is still there."""
-    from pathlib import Path
-
-    try:
-        from huggingface_hub.constants import HF_HUB_CACHE
-    except ImportError:
-        return None
-    root = Path(cache_dir or HF_HUB_CACHE) / f"models--{model_id.replace('/', '--')}"
-    snapshots = root / "snapshots"
-    if not snapshots.exists():
-        return None
-    return root
-
-
-def free_checkpoint_disk(step: int, model_id: str = C.MODEL_ID, cache_dir: str | None = None) -> int:
-    """Delete a downloaded revision's blobs.  Returns bytes freed.
+def free_checkpoint_disk(
+    step: int, model_id: str = C.MODEL_ID, cache_dir: str | None = None
+) -> int:
+    """Delete ONE revision's files from the HuggingFace cache.  Returns bytes freed.
 
     Four fp32 checkpoints are ~22.6 GB of safetensors, and HuggingFace does NOT share
     blobs between revisions of the same repo -- each ``stepNNNNNN`` is a full copy. On
     Colab the disk fills before the GPU does, usually on the fourth checkpoint, after
     the run has already cost forty minutes.
 
-    This is deliberately not automatic: re-downloading is expensive, so a run that fits
-    should keep its cache. :func:`checkpoint` takes ``free_disk=True`` when it does not.
-    """
-    import shutil
+    One revision, not the repo.  Deleting the repo directory would take the other three
+    checkpoints and the tokenizer snapshot with it, turning "free some disk" into
+    "download everything again, three more times" -- and the tokenizer is loaded once,
+    at the start, so its loss would not surface until something decoded wrong.
 
-    root = _snapshot_dir(step, model_id, cache_dir)
-    if root is None or not root.exists():
+    Uses ``huggingface_hub.scan_cache_dir`` so that blobs shared with a revision still
+    on disk are kept; returns 0 rather than raising when the revision is not cached.
+
+    Deliberately not automatic: re-downloading is expensive, so a run that fits should
+    keep its cache. :func:`checkpoint` takes ``free_disk=True`` when it does not.
+    """
+    try:
+        from huggingface_hub import scan_cache_dir
+    except ImportError:
         return 0
-    freed = sum(f.stat().st_size for f in root.rglob("*") if f.is_file())
-    shutil.rmtree(root, ignore_errors=True)
+
+    revision = revision_for(step)
+    try:
+        cache = scan_cache_dir(cache_dir) if cache_dir else scan_cache_dir()
+    except Exception:  # noqa: BLE001 -- a corrupt or absent cache is not an error here
+        return 0
+
+    hashes = [
+        rev.commit_hash
+        for repo in cache.repos
+        if repo.repo_id == model_id
+        for rev in repo.revisions
+        if revision in rev.refs or rev.commit_hash == revision
+    ]
+    if not hashes:
+        return 0
+
+    strategy = cache.delete_revisions(*hashes)
+    freed = int(strategy.expected_freed_size)
+    strategy.execute()
     return freed
 
 

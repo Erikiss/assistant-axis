@@ -102,7 +102,14 @@ def rank_attribution(bundle: Bundle) -> ProbeResult:
         ids = bundle.topk_ids[c_i, a_i]
         where = np.flatnonzero(ids == tgt)
         if not where.size:
-            return {"gap_above": float("nan"), "gap_below": float("nan")}
+            # Outside the stored top-k: there is no neighbour to measure a margin to.
+            return {
+                "p_target": float(bundle.target_p[c_i, a_i]),
+                "gap_above": float("nan"),
+                "gap_below": float("nan"),
+                "nearest_gap": float("nan"),
+                "relative_nearest_gap": float("nan"),
+            }
         j = int(where[0])
         p_here = float(probs[j])
         above = float(probs[j - 1]) - p_here if j > 0 else float("inf")
@@ -123,9 +130,10 @@ def rank_attribution(bundle: Bundle) -> ProbeResult:
             "rank": int(bundle.target_rank[bundle.ci(step), a_i]),
             **{k: v for k, v in m.items()},
         }
-        if jitter is not None:
+        gap = m.get("nearest_gap", float("nan"))
+        if jitter is not None and np.isfinite(gap):
             row["jitter_band"] = float(jitter)
-            row["rank_resolved"] = bool(m.get("nearest_gap", 0) > float(jitter))
+            row["rank_resolved"] = bool(gap > float(jitter))
         margins.append(row)
 
     unresolved = [
@@ -158,9 +166,12 @@ def rank_attribution(bundle: Bundle) -> ProbeResult:
             f"crossed it; the rank change tracks the target."
         )
 
+    lo_margin = margins[bundle.ci(lo)]
     margin_note = (
-        f" The rank was held by a margin of {margins[bundle.ci(lo)]['nearest_gap']:.5f} "
-        f"at step{lo} ({margins[bundle.ci(lo)]['relative_nearest_gap'] * 100:.1f}% of "
+        ""
+        if not np.isfinite(lo_margin.get("nearest_gap", float("nan")))
+        else f" The rank was held by a margin of {lo_margin['nearest_gap']:.5f} "
+        f"at step{lo} ({lo_margin['relative_nearest_gap'] * 100:.1f}% of "
         "the target's own probability)"
         + (
             f", against a measured run-to-run jitter of {float(jitter):.5f}"

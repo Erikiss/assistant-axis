@@ -628,3 +628,91 @@ def test_a_large_jitter_band_marks_the_rank_unresolved():
     r = registry.get("rank_attribution")(b)
     assert 131000 in r.evidence["unresolved_checkpoints"]
     assert "UNRESOLVED" in r.summary
+
+
+# ---------------------------------------------------------------------------------
+# sham anchor: a control relabelled as the anchor
+# ---------------------------------------------------------------------------------
+
+
+def sham_bundle(control: str = "kontrolle_00"):
+    """A bundle in which the anchor's rows are a control's.
+
+    Nothing happened to this passage at the exposure boundary, so it is the false-
+    positive calibration the suite would otherwise lack: how many probes say the same
+    thing about a passage that was never trained on as about the one that was?
+    """
+    b = fake_bundle()
+    a, c = b.pi(C.ANCHOR), b.pi(control)
+    for name in (
+        "topk_ids", "topk_probs", "topk_logprobs", "target_p", "target_logp",
+        "target_rank", "target_rank_in_topk", "entropy", "top1_ids", "top1_probs",
+        "ctx_nll", "attn_last", "attn_received",
+    ):
+        arr = getattr(b, name)
+        arr[:, a] = arr[:, c]
+    b.target_ids[a] = b.target_ids[c]
+    b.aux["ladder"][:, a] = b.aux["ladder"][:, c]
+    b.aux["norm_attn"][:, a] = b.aux["norm_attn"][:, c]
+    return b
+
+
+def test_no_probe_crashes_on_a_sham_anchor():
+    """A probe that raises on a degenerate passage returns no verdict at all, which is
+    worse than returning the wrong one."""
+    b = sham_bundle()
+    failures = []
+    for probe in registry.all_probes():
+        try:
+            r = probe(b)
+        except Exception as exc:  # noqa: BLE001
+            failures.append(f"{probe.name}: {type(exc).__name__}: {exc}")
+            continue
+        if r.verdict == "ERROR":
+            failures.append(f"{probe.name}: ERROR verdict -- {r.summary}")
+    assert not failures, "probes that fail on a sham anchor:\n  " + "\n  ".join(failures)
+
+
+def test_anchor_specific_probes_read_the_anchor_row_not_a_remembered_one():
+    """A coinciding verdict is not by itself a failure -- a control is also not
+    memorized, so `memorization_entry` saying SCOPE_FAILED for both is correct. What
+    would be a failure is the probe reporting the *anchor's numbers* for a sham, which
+    would mean it is not reading the row it was handed."""
+    real = registry.get("memorization_entry")(fake_bundle())
+    sham = registry.get("memorization_entry")(sham_bundle())
+    real_argmax = real.tables["argmax vs target, per checkpoint"][0]["p_argmax"]
+    sham_argmax = sham.tables["argmax vs target, per checkpoint"][0]["p_argmax"]
+    assert real_argmax == pytest.approx(C.REFERENCE_TOP1_P[130000], abs=1e-5)
+    assert sham_argmax != pytest.approx(real_argmax, abs=1e-6)
+
+
+def test_closed_slot_discriminates_the_anchor_from_a_sham():
+    """The near-closed unit slot is a property of this passage's continuation, so a
+    control relabelled as the anchor must not reproduce it."""
+    real = registry.get("closed_slot")(fake_bundle())
+    sham = registry.get("closed_slot")(sham_bundle())
+    assert real.verdict == "SUPPORTED"
+    assert real.evidence["slot_total_mean"] == pytest.approx(0.96728, abs=1e-4)
+    assert sham.verdict != "SUPPORTED" or sham.evidence["slot_total_mean"] != pytest.approx(
+        real.evidence["slot_total_mean"], abs=1e-4
+    )
+
+
+def test_corpus_descriptive_probes_are_expected_not_to_discriminate():
+    """sink_stability and position_bias describe the whole passage set, so giving the
+    same answer for a sham anchor is correct -- and their `cannot_conclude` has to own
+    that rather than imply anchor-specificity."""
+    b = sham_bundle()
+    for name in ("sink_stability", "position_bias"):
+        r = registry.get(name)(b)
+        assert r.verdict in registry.VERDICTS
+        assert r.cannot_conclude
+
+
+def test_scope_checks_are_anchor_independent_by_construction():
+    """A scope check asks whether a paper's subject matter is present in the *setup*,
+    which does not depend on which passage is the anchor."""
+    real = {r.probe: r.verdict for r in registry.run(fake_bundle(), progress=False)}
+    sham = {r.probe: r.verdict for r in registry.run(sham_bundle(), progress=False)}
+    for name in ("cliff_token_scope", "self_loop_scope"):
+        assert real[name] == sham[name] == "SCOPE_FAILED"

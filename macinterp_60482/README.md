@@ -80,7 +80,7 @@ mündlichen Beschreibung rekonstruiert hat.
 | Repeat Curse | arXiv:2504.14218 | Wiederholung war eine Hypothese | **Gegenstand messen** — die Probe misst, ob der Kontext überhaupt wiederholt |
 | Verbatim Memorization Circuits | arXiv:2506.21588 | die Gegenprüfung zur Memorierungs-Lesart | **Eintrittskriterium nicht erfüllt** — verlangt Memorierungsscore 1.0, also argmax = Ziel |
 | Focus Directions | arXiv:2503.23306 | contextual heads statt bloßer Verhaltensbeobachtung | **prüfbar** — liest irgendein Kopf die Namensstelle? |
-| Lost in the Middle at Birth | 2026 (Zitat vor Gebrauch prüfen) | leitet Positionsbias aus der Architektur ab, zeigt ihn an *untrainierten* Netzen | **prüfbar, und das einzige mit erfüllten Voraussetzungen** |
+| Lost in the Middle at Birth | arXiv:2603.10123 (Chowdhury, Einzelautor, Preprint) | leitet Positionsbias aus der Architektur ab, zeigt ihn an *untrainierten* Netzen | **prüfbar, und das einzige mit erfüllten Voraussetzungen** |
 
 ### Die Kandidaten, die nicht auf der Liste stehen
 
@@ -178,7 +178,7 @@ was er schon gemessen hat.
 ### Tests
 
 ```bash
-pytest tests/ -q                          # 60 Tests, keine GPU, kein Download, kein Netz
+pytest tests/ -q                          # 65 Tests, keine GPU, kein Download, kein Netz
 M60482_NETWORK_TESTS=1 pytest tests/ -q   # + 3 Tests gegen huggingface.co (~12 KB)
 ```
 
@@ -230,7 +230,8 @@ stellen sollte.
 | # | Probe | Frage |
 |---|---|---|
 | 10 | `memorization_entry` | Ist das Ziel je die Greedy-Fortsetzung? |
-| 12 | `multiplicity_ledger` | Wie viele der 19 States zeigen das Muster, und wie viele sollten es zufällig? |
+| 12 | `multiplicity_ledger` | Übersteht der Anker dieselbe Auswahlregel, die ihn gewählt hat? |
+| 16 | `closed_slot` | Summieren sich die drei Fortsetzungen zu einer Konstanten? |
 | 15 | `noise_floor` | Überschreitet die Änderung das Checkpoint-Rauschen? |
 | 18 | `softmax_renormalization` | Überlebt der Effekt die Messung als Logit-Kontrast? |
 | 20 | `rank_attribution` | Bewegte sich das Ziel oder sein Konkurrent? |
@@ -357,6 +358,18 @@ Aussage.
   Probe zu sagen, ob ihre Statistik eine Funktion dieses Auswahlkriteriums ist.
 - Attention zeigt, welche Schicht welche Stelle liest, nicht in welcher Reihenfolge. Ein
   Transformer hat Tiefe, keine Zeit.
+- **Die 40 Kontrollen sind nicht austauschbar mit dem Anker.** Jede trägt ein anderes
+  Zieltoken in einem anderen Kontext mit einer anderen Konkurrenzstruktur. Der Anker sitzt in
+  einem nahezu geschlossenen Drei-Wege-Slot, in dem Bewegung arithmetisch erzwungen ist; eine
+  Kontrolle mit p(Ziel) = 0.9 kann sich physisch nicht bewegen, eine mit 0.3 um 0.2. Die
+  Kontrollverteilung jeder Statistik ist damit eine Mischung über Regime. Ein passend gezogener
+  Kontrollsatz — Pile-Passagen, die ebenfalls auf `" km"` enden — wäre der richtige Vergleich
+  und lässt sich über `m60482.pile.fetch_training_row` billig ziehen; dieser Lauf hat ihn nicht.
+- **Sham-Anker-Kalibrierung.** `tests/test_suite.py::sham_bundle` setzt eine Kontrolle an die
+  Stelle des Ankers und prüft, dass keine Probe abstürzt. Mehrere Proben geben dabei dieselbe
+  Antwort wie für den echten Anker — bei den Scope-Checks ist das korrekt (sie fragen nach dem
+  Aufbau, nicht nach der Passage), bei `sink_stability` und `position_bias` heißt es, dass sie
+  den Korpus beschreiben und nicht den Anker. Ihre `cannot_conclude`-Felder sagen das.
 - Aufmerksamkeitsmasse ist keine Attribution. `norm_attribution` gewichtet mit `‖v‖` und ist
   ein besserer Näherungswert, aber keine Messung des Beitrags: Es ignoriert Auslöschung
   zwischen Positionen. Das direkt zu klären bräuchte Ablation oder Patching; keine dieser

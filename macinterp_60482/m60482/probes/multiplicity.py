@@ -21,18 +21,19 @@ from __future__ import annotations
 import numpy as np
 
 from .. import config as C
+from .. import stats as S
 from ..measure import Bundle
 from ..registry import ProbeResult, register
 
 RULE = (
-    "Under the null, a state's largest absolute boundary change lands on its exposure "
-    "boundary with probability 1/n_boundaries. Count how many of the bundle's states "
-    "actually show that pattern and compare with the expected count. SUPPORTED (the "
-    "anchor stands out beyond selection) if the observed count is at or below the "
-    "expected count AND the anchor is the single largest effect among all states. "
-    "REFUTED if the observed count is consistent with chance -- the anchor is then one "
-    "of several states showing a pattern that chance produces at this rate. "
-    "INCONCLUSIVE if fewer than 5 states are present."
+    "Apply the anchor's own selection rule to every control: take each control's "
+    "largest absolute boundary change over the three boundaries, exactly as the anchor "
+    "was picked, and rank the anchor's selected statistic inside that distribution. "
+    "SUPPORTED if the anchor's selected statistic is above the 95th percentile of the "
+    "controls' selected statistics -- it survives being chosen the same way they were. "
+    "REFUTED if it sits inside their range. INCONCLUSIVE if there are too few controls "
+    "to rank against. The state counts below are a LEDGER, not a test: they say how "
+    "many comparisons were made, and no count of them can support a hypothesis."
 )
 
 
@@ -96,6 +97,17 @@ def multiplicity_ledger(bundle: Bundle) -> ProbeResult:
     observed = len(hits)
     p_at_least_one = 1.0 - (1.0 - 1.0 / n_b) ** n_states
 
+    # The claim was directional -- the target's probability was said to RISE at the
+    # exposure boundary. For that, the pattern is "largest in magnitude AND positive",
+    # which chance produces with probability 1/(2*n_b) rather than 1/n_b.
+    directional_hits = [
+        r["state"] for r in rows
+        if r["largest_is_exposure"] and r["d_exposure"] > 0
+    ]
+    p_dir = 1.0 / (2 * n_b)
+    expected_dir = n_states * p_dir
+    p_at_least_one_dir = 1.0 - (1.0 - p_dir) ** n_states
+
     anchor_rank = next(
         (i + 1 for i, r in enumerate(rows) if r["state"] == C.ANCHOR), None
     )
@@ -109,36 +121,45 @@ def multiplicity_ledger(bundle: Bundle) -> ProbeResult:
         "makes them a usable reference for how often the pattern appears by chance."
     )
 
-    if observed <= expected and anchor_is_largest:
+    # The only defensible test here: put the anchor through the selection rule that
+    # picked it, and put every control through the same rule. Comparing a selected
+    # maximum against unselected values is how a 1-in-3 coin flip becomes a finding.
+    a_i = bundle.pi(C.ANCHOR)
+    anchor_selected = max(abs(dlogp(a_i, b)) for b in boundaries)
+    ctrl_selected = [
+        max(abs(dlogp(bundle.pi(n), b)) for b in boundaries) for n in bundle.control_names
+    ]
+
+    cmp_ = (
+        S.compare_to_controls(
+            "selected_max_abs_dlogp", anchor_selected, ctrl_selected, direction="greater"
+        )
+        if ctrl_selected else None
+    )
+
+    if cmp_ is None:
+        verdict = "INCONCLUSIVE"
+        summary = (
+            "No controls to apply the selection rule to; the ledger below counts the "
+            "comparisons but nothing tests them."
+        )
+    elif cmp_.p_one_sided <= 0.05:
         verdict = "SUPPORTED"
         summary = (
-            f"{observed} of {n_states} states put their largest change on the exposure "
-            f"boundary against {expected:.1f} expected by chance, and the anchor is the "
-            "largest of them."
-        )
-    elif observed <= expected or not anchor_is_largest:
-        verdict = "REFUTED"
-        parts = []
-        if observed > expected:
-            parts.append(
-                f"{observed} of {n_states} states show the pattern against "
-                f"{expected:.1f} expected by chance"
-            )
-        if not anchor_is_largest:
-            parts.append(
-                f"the anchor is only the {anchor_rank}th largest exposure-boundary "
-                f"change among {n_states} states"
-            )
-        summary = (
-            "; ".join(parts).capitalize()
-            + f". With {n_states} states and {n_b} boundaries, the probability that at "
-            f"least one state shows this pattern by chance is {p_at_least_one:.3f}."
+            f"Put through the same selection rule as the anchor -- largest |change| "
+            f"over {n_b} boundaries -- the anchor's {anchor_selected:.5f} is at the "
+            f"{cmp_.percentile:.0f}th percentile of the controls' selected maxima "
+            f"(p = {cmp_.p_one_sided:.4f}). It survives being chosen the way they were."
         )
     else:
         verdict = "REFUTED"
         summary = (
-            f"{observed} of {n_states} states show the pattern against {expected:.1f} "
-            f"expected; P(at least one by chance) = {p_at_least_one:.3f}."
+            f"Selected the same way the anchor was -- largest |change| over {n_b} "
+            f"boundaries -- the anchor's {anchor_selected:.5f} sits at the "
+            f"{cmp_.percentile:.0f}th percentile of the controls' selected maxima "
+            f"(p = {cmp_.p_one_sided:.4f}, median {cmp_.control_median:.5f}). "
+            f"Separately, {observed} of {n_states} states put their largest change on "
+            f"the exposure boundary against {expected:.1f} expected by chance."
         )
 
     return ProbeResult(
@@ -156,8 +177,14 @@ def multiplicity_ledger(bundle: Bundle) -> ProbeResult:
             "observed": observed,
             "states_with_largest_at_exposure": hits,
             "p_at_least_one_by_chance": p_at_least_one,
+            "directional_observed": len(directional_hits),
+            "directional_expected_by_chance": expected_dir,
+            "directional_p_at_least_one": p_at_least_one_dir,
+            "directional_states": directional_hits,
             "anchor_rank_among_states": anchor_rank,
             "anchor_is_largest": bool(anchor_is_largest),
+            "anchor_selected_statistic": anchor_selected,
+            "selection_matched_comparison": cmp_.as_dict() if cmp_ else None,
             "attainable_p_floor": C.MIN_ATTAINABLE_P,
             "comparisons_in_this_suite": n_states * n_b,
             "bonferroni_alpha_needed": 0.05 / (n_states * n_b),
@@ -165,6 +192,11 @@ def multiplicity_ledger(bundle: Bundle) -> ProbeResult:
         },
         tables={"largest boundary change per state": rows},
         cannot_conclude=(
+            "The state counts are a ledger, not a test: no count of comparisons can "
+            "support a hypothesis, and the verdict above rests only on the "
+            "selection-matched control comparison. Note also that the anchor being the "
+            "largest of the 19 states is guaranteed by how it was chosen and is "
+            "therefore reported, never used. "
             "The ledger counts comparisons; it does not say the anchor's effect is zero. "
             "A real effect can also be selected for. What it does say is that this "
             "design cannot distinguish the two, because the smallest attainable p "
@@ -173,5 +205,13 @@ def multiplicity_ledger(bundle: Bundle) -> ProbeResult:
             "No amount of care in the analysis fixes that; only more controls or a "
             "pre-registered single comparison would."
         ),
-        caveats=[note_shared_boundary],
+        caveats=[
+            note_shared_boundary,
+            f"Two counts are reported. The magnitude version asks how often a state's "
+            f"largest |change| lands on the exposure boundary (chance 1/{n_b}); the "
+            "directional version asks how often it lands there AND is positive "
+            f"(chance 1/{2 * n_b}), which is the shape the original claim had. The "
+            f"directional version expects {expected_dir:.1f} of {n_states} states by "
+            f"chance, with P(at least one) = {p_at_least_one_dir:.3f}.",
+        ],
     )

@@ -125,11 +125,33 @@ def softmax_renormalization(bundle: Bundle) -> ProbeResult:
         if ctrl_d else None
     )
 
-    ratio = abs(d_exp) / max_plac if max_plac and np.isfinite(max_plac) and max_plac > 0 else float("nan")
-    p_ratio = (
-        abs(p_d[C.EXPOSURE_BOUNDARY])
-        / max((abs(v) for b, v in p_d.items() if b != C.EXPOSURE_BOUNDARY), default=float("nan"))
+    def safe_ratio(numer: float, denom: float) -> float:
+        """A placebo boundary that did not move gives no scale to compare against."""
+        if not np.isfinite(numer) or not np.isfinite(denom) or denom <= 0:
+            return float("nan")
+        return abs(numer) / denom
+
+    ratio = safe_ratio(d_exp, max_plac)
+    max_plac_p = max(
+        (abs(v) for b, v in p_d.items() if b != C.EXPOSURE_BOUNDARY and np.isfinite(v)),
+        default=float("nan"),
     )
+    p_ratio = safe_ratio(p_d[C.EXPOSURE_BOUNDARY], max_plac_p)
+
+    if not np.isfinite(d_exp):
+        return ProbeResult(
+            probe="softmax_renormalization",
+            paper="arXiv:2304.15004",
+            hypothesis="The probability rise is a change in the target.",
+            question="Does the effect survive being measured as a logit contrast?",
+            verdict="NOT_RUN",
+            decision_rule=RULE,
+            summary=(
+                "The contrast is undefined: the target or its reference token is absent "
+                "from the stored top-k at one of the two checkpoints."
+            ),
+            cannot_conclude="Nothing; the statistic could not be formed.",
+        )
 
     clears_margin = np.isfinite(ratio) and ratio >= MARGIN
     clears_controls = cmp_ is not None and cmp_.p_one_sided <= 0.05
