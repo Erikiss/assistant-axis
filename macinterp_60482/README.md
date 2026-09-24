@@ -122,8 +122,12 @@ ausgewiesen.
 ### Kommandozeile
 
 ```bash
-# voller Lauf
-python -m m60482.run --passages /pfad/zu/passagen.json --output runs
+# voller Lauf: Hauptmessung + Trunkierungsleiter + untrainierte Basislinie
+#              + norm-gewichtete Attention
+python -m m60482.run --passages /pfad/zu/passagen.json --output runs --check-variant
+
+# auf einer kleinen Platte: jeden Checkpoint nach Gebrauch loeschen
+python -m m60482.run --passages ... --free-disk
 
 # ohne GPU und ohne Modell: Proben gegen ein Bundle mit den echten Ankerzahlen
 python -m m60482.run --smoke
@@ -131,6 +135,11 @@ python -m m60482.run --smoke
 # nur bestimmte Proben, auf einem bereits gemessenen Bundle
 python -m m60482.run --reuse-bundle runs/<id>/bundle.npz --probes noise_floor context_dependence
 ```
+
+Die Zusatzmessungen sind standardmäßig **an**. Ohne sie melden vier Proben `NOT_RUN` —
+darunter `context_dependence`, die die Frage am ehesten entscheidet. Jede Stufe wird ins
+gecachte Bundle geschrieben, sobald sie fertig ist, also überlebt ein abgestürzter Lauf das,
+was er schon gemessen hat.
 
 ### Tests
 

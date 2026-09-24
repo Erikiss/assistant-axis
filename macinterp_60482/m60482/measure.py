@@ -313,6 +313,7 @@ def measure(
             dtype=cfg.dtype,
             device=cfg.device,
             need_attention=cfg.capture_attention,
+            free_disk=bool(cfg.extra.get("free_disk")),
         ) as ckpt:
             if cfg.capture_attention and not allocated:
                 attn_last = np.zeros((n_ckpt, n_pass, ckpt.n_layers, T), dtype=np.float32)
@@ -386,6 +387,8 @@ def measure(
         "elapsed_s": round(time.time() - started, 1),
         "vocab": vocab,
         "attention_captured": bool(cfg.capture_attention),
+        "model_variant": C.MODEL_VARIANT,
+        "free_disk": bool(cfg.extra.get("free_disk")),
     }
 
     return Bundle(

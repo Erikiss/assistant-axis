@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 from typing import Sequence
 
+from . import aux as A
 from . import config as C
 from . import passages as P
 from . import registry, report
@@ -40,17 +41,48 @@ def build_bundle(
     roots: Sequence[str] = DEFAULT_ROOTS,
     allow_synthetic: bool = False,
     cache: Path | None = None,
+    aux: bool = True,
+    untrained: bool = True,
+    norm_attn: bool = True,
 ) -> Bundle:
-    """Measure, or load a previously measured bundle from ``cache``."""
+    """Measure, or load a previously measured bundle from ``cache``.
+
+    The auxiliary measurements default to on. Four probes -- context_dependence,
+    norm_attribution, the greedy-continuation half of memorization_entry, and the
+    untrained comparison in position_bias -- report NOT_RUN without them, and
+    context_dependence is the one most likely to decide the whole question.
+
+    Each stage is appended to the cached bundle as it completes, so a session that dies
+    part-way keeps what it measured.
+    """
     if cache and cache.exists():
         print(f"reusing bundle: {cache}", flush=True)
-        return Bundle.load(cache)
+        bundle = Bundle.load(cache)
+        ps = None
+    else:
+        ps = P.resolve(passages_path, roots, allow_synthetic=allow_synthetic)
+        bundle = measure(ps, cfg)
+        if cache:
+            bundle.save(cache)
+            print(f"bundle written: {cache}", flush=True)
 
-    ps = P.resolve(passages_path, roots, allow_synthetic=allow_synthetic)
-    bundle = measure(ps, cfg)
-    if cache:
-        bundle.save(cache)
-        print(f"bundle written: {cache}", flush=True)
+    stages = []
+    if aux and "ladder" not in bundle.aux:
+        stages.append(("auxiliary measurements", lambda p: A.measure_aux(p, cfg)))
+    if untrained and "untrained_attn_last" not in bundle.aux:
+        stages.append(("untrained baseline", lambda p: A.untrained_attention(p, cfg)))
+    if norm_attn and "norm_attn" not in bundle.aux:
+        stages.append(("norm-weighted attention", lambda p: A.measure_norm_attribution(p, cfg)))
+
+    if stages and ps is None:
+        ps = P.resolve(passages_path, roots, allow_synthetic=allow_synthetic, verbose=False)
+
+    for label, fn in stages:
+        print(f"\n{label} ...", flush=True)
+        bundle.aux.update(fn(ps))
+        if cache:
+            bundle.save(cache)
+
     return bundle
 
 
@@ -70,6 +102,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--probes", nargs="*", default=[], help="subset of probes; default all")
     ap.add_argument("--no-attention", action="store_true", help="skip attention capture")
     ap.add_argument(
+        "--no-aux",
+        action="store_true",
+        help="skip the truncation ladder, greedy continuations and name substitutions "
+        "(context_dependence then cannot run, and it is the probe most likely to "
+        "settle the question)",
+    )
+    ap.add_argument("--no-untrained", action="store_true", help="skip the untrained baseline")
+    ap.add_argument("--no-norm-attn", action="store_true", help="skip norm-weighted attention")
+    ap.add_argument(
+        "--free-disk",
+        action="store_true",
+        help="delete each checkpoint's files after use; four fp32 revisions are ~22.6 GB "
+        "and HuggingFace does not share blobs between them",
+    )
+    ap.add_argument(
+        "--check-variant",
+        action="store_true",
+        help="fetch the anchor's Pile sample from both preshuffled corpora to confirm "
+        "pythia-1.4b vs -deduped (~8 KB, needs network)",
+    )
+    ap.add_argument(
         "--allow-synthetic",
         action="store_true",
         help="run on a meaningless passage set when none is found (pipeline test only)",
@@ -86,6 +139,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     out_dir = Path(args.output) / run_id
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    if args.check_variant and not args.smoke:
+        from . import pile
+
+        print("identifying the model variant from the training data ...")
+        try:
+            variant = pile.identify_variant(verbose=True)
+            print(f"variant: {variant}")
+            if variant != C.MODEL_VARIANT:
+                print(
+                    f"  !! config says {C.MODEL_VARIANT}. The measurement would be "
+                    "against the wrong suite."
+                )
+        except (OSError, RuntimeError) as exc:
+            print(f"  could not check: {exc}")
+
     if args.smoke:
         from .synthetic_bundle import fake_bundle
 
@@ -101,6 +169,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             output_dir=str(out_dir),
             run_id=run_id,
             probes=tuple(args.probes),
+            extra={"free_disk": bool(args.free_disk)},
         )
         cache = Path(args.reuse_bundle) if args.reuse_bundle else out_dir / "bundle.npz"
         bundle = build_bundle(
@@ -109,6 +178,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             roots=args.roots,
             allow_synthetic=args.allow_synthetic,
             cache=cache,
+            aux=not args.no_aux,
+            untrained=not args.no_untrained,
+            norm_attn=not args.no_norm_attn,
         )
 
         check = verify_against_reference(bundle)

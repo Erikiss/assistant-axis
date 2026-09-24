@@ -153,6 +153,7 @@ def measure_aux(
             dtype=cfg.dtype,
             device=cfg.device,
             need_attention=False,
+            free_disk=bool(cfg.extra.get("free_disk")),
         ) as ckpt:
             ladder_arr[c_i] = truncation_ladder(ckpt, passages, ladder)
 
@@ -319,6 +320,7 @@ def measure_norm_attribution(
         with M.checkpoint(
             step, model_id=cfg.model_id, dtype=cfg.dtype,
             device=cfg.device, need_attention=True,
+            free_disk=bool(cfg.extra.get("free_disk")),
         ) as ckpt:
             prof = norm_weighted_attention(ckpt, passages)
             if arr is None:
