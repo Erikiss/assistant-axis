@@ -1,0 +1,8 @@
+# Pinned loosely: the study needs fp32 forward passes and eager attention, nothing exotic.
+torch>=2.0
+transformers>=4.40
+accelerate
+huggingface_hub
+numpy>=1.24
+pandas
+pytest>=7.0
