@@ -209,13 +209,29 @@ def forward_pass(
     return logits_last, attentions
 
 
-def forward_pass_full_attention(ckpt: LoadedCheckpoint, ids: Sequence[int]):
-    """As :func:`forward_pass`, but also returns attention *received* by each position,
-    averaged over all queries -- ``[layer, head, T]``.
+def forward_pass_all(ckpt: LoadedCheckpoint, ids: Sequence[int], *, need_attention: bool = True):
+    """Everything the study wants from one passage, in a single forward pass.
 
-    Materialises the full ``[layer, head, T, T]`` tensor for one passage.  At T=207,
-    24 layers and 16 heads that is ~63 MB in fp32, which is fine one passage at a time
-    and is not fine for 69 at once.
+    Returns ``(logits_last, ctx_nll, last_query, received)``:
+
+    ``logits_last``
+        ``[vocab]`` float32 on CPU -- the next-token distribution at the final position.
+    ``ctx_nll``
+        ``[T-1]`` float32 -- teacher-forced NLL of each context token given its prefix.
+        Entry *i* is the NLL of ``ids[i+1]``.  The earlier token-level analysis lived on
+        exactly this array.
+    ``last_query``
+        ``[layer, head, T]`` -- the final query's attention, or ``None``.
+    ``received``
+        ``[layer, head, T]`` -- attention received by each position, averaged over the
+        queries that could attend to it, or ``None``.
+
+    Computing the context NLL here rather than in a second pass halves the sweep: 69
+    passages x 4 checkpoints is 276 forward passes saved.
+
+    Materialising the full ``[layer, head, T, T]`` attention costs ~63 MB in fp32 at
+    T=207 with 24 layers and 16 heads.  That is fine one passage at a time and is why
+    the sweep is un-batched.
     """
     import torch
 
@@ -223,23 +239,43 @@ def forward_pass_full_attention(ckpt: LoadedCheckpoint, ids: Sequence[int]):
     input_ids = torch.tensor([list(ids)], dtype=torch.long, device=device)
 
     with torch.inference_mode():
-        out = ckpt.model(input_ids, output_attentions=True, use_cache=False)
+        out = ckpt.model(input_ids, output_attentions=need_attention, use_cache=False)
+
+    logits = out.logits[0]                                   # [T, vocab]
+    logits_last = logits[-1].to(torch.float32).cpu()
+
+    # NLL of each context token given its prefix, in the same pass.
+    ctx_logprobs = torch.log_softmax(logits[:-1].to(torch.float32), dim=-1)
+    targets = input_ids[0, 1:].unsqueeze(1)
+    ctx_nll = -ctx_logprobs.gather(1, targets).squeeze(1).cpu()
+
+    if not need_attention:
+        return logits_last, ctx_nll, None, None
 
     if out.attentions is None or any(a is None for a in out.attentions):
-        raise RuntimeError('attention is None; load with attn_implementation="eager"')
+        raise RuntimeError(
+            "output_attentions=True returned None. The model was not loaded with "
+            'attn_implementation="eager"; attention numbers would be missing rather '
+            "than wrong, which is worse."
+        )
 
-    logits_last = out.logits[0, -1].to(torch.float32).cpu()
     last_query = torch.stack([a[0, :, -1, :].to(torch.float32).cpu() for a in out.attentions])
 
-    # Causal mask means position j is attended to by queries j..T-1 only.  Dividing by
-    # T would understate late positions; divide by the number of queries that could
-    # have attended at all.
+    # Causal masking means position j is attended to by queries j..T-1 only. Dividing by
+    # T would understate late positions; divide by the number of queries that could have
+    # attended at all.
     T = input_ids.shape[1]
-    denom = torch.arange(T, 0, -1, dtype=torch.float32)  # [T]
+    denom = torch.arange(T, 0, -1, dtype=torch.float32)
     received = torch.stack(
         [a[0].to(torch.float32).cpu().sum(dim=1) / denom for a in out.attentions]
     )
 
+    return logits_last, ctx_nll, last_query, received
+
+
+def forward_pass_full_attention(ckpt: LoadedCheckpoint, ids: Sequence[int]):
+    """Backwards-compatible shim: ``(logits_last, last_query, received)``."""
+    logits_last, _, last_query, received = forward_pass_all(ckpt, ids, need_attention=True)
     return logits_last, last_query, received
 
 

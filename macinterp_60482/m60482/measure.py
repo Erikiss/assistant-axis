@@ -155,7 +155,10 @@ class Bundle:
     # ---------------------------------------------------------------------------------
 
     def save(self, path: str | Path) -> Path:
+        # np.savez_compressed appends .npz when it is missing; return the real path.
         path = Path(path)
+        if path.suffix != ".npz":
+            path = path.with_suffix(path.suffix + ".npz")
         path.parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(
             path,
@@ -245,25 +248,6 @@ def _target_stats(logits: "np.ndarray", target_id: int, top_k: int):
     )
 
 
-def _context_nll(ckpt, ids: Sequence[int]) -> np.ndarray:
-    """Teacher-forced per-position NLL over the context, ``[T-1]``.
-
-    Position i of the result is the NLL of ``ids[i+1]`` given ``ids[:i+1]``.  The
-    earlier token-level analysis lived on exactly this array; keeping it means the
-    positional-structure finding can be re-checked from the same bundle.
-    """
-    import torch
-
-    device = ckpt.device
-    inp = torch.tensor([list(ids)], dtype=torch.long, device=device)
-    with torch.inference_mode():
-        out = ckpt.model(inp, output_attentions=False, use_cache=False)
-    logprobs = torch.log_softmax(out.logits[0, :-1].to(torch.float32), dim=-1)
-    targets = inp[0, 1:].cpu()
-    nll = -logprobs.cpu().gather(1, targets.unsqueeze(1)).squeeze(1)
-    return nll.numpy().astype(np.float32)
-
-
 def measure(
     passage_set: PassageSet,
     cfg: C.RunConfig,
@@ -339,14 +323,14 @@ def measure(
                 allocated = True
 
             for p_i, passage in enumerate(passages):
+                logits, nll, last_q, received = M.forward_pass_all(
+                    ckpt, passage.ids, need_attention=cfg.capture_attention
+                )
                 if cfg.capture_attention:
-                    logits, last_q, received = M.forward_pass_full_attention(ckpt, passage.ids)
                     attn_last[c, p_i] = last_q.mean(dim=1).numpy()
                     attn_received[c, p_i] = received.mean(dim=1).numpy()
                     if passage.name in fam_idx:
                         attn_heads[c, fam_idx[passage.name]] = last_q.numpy()
-                else:
-                    logits, _ = M.forward_pass(ckpt, passage.ids, need_attention=False)
 
                 (
                     ids_k,
@@ -370,7 +354,7 @@ def measure(
                 top1_ids[c, p_i] = int(ids_k[0])
                 top1_probs[c, p_i] = float(probs_k[0])
 
-                ctx_nll[c, p_i] = _context_nll(ckpt, passage.ids)
+                ctx_nll[c, p_i] = nll.numpy().astype(np.float32)
 
                 if progress and (p_i + 1) % 20 == 0:
                     print(f"    {p_i + 1}/{n_pass} passages", flush=True)

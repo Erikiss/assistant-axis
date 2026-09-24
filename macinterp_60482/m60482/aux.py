@@ -42,7 +42,7 @@ GREEDY_TOKENS = 24
 def _target_prob(ckpt, ids: Sequence[int], target_id: int) -> float:
     import torch
 
-    logits, _ = M.forward_pass(ckpt, ids, need_attention=False)
+    logits, _, _, _ = M.forward_pass_all(ckpt, ids, need_attention=False)
     return float(torch.softmax(logits, dim=-1)[target_id].item())
 
 
@@ -72,7 +72,7 @@ def greedy_continuation(ckpt, ids: Sequence[int], n: int = GREEDY_TOKENS) -> lis
     cur = list(ids)
     out: list[int] = []
     for _ in range(n):
-        logits, _ = M.forward_pass(ckpt, cur, need_attention=False)
+        logits, _, _, _ = M.forward_pass_all(ckpt, cur, need_attention=False)
         nxt = int(torch.argmax(logits).item())
         out.append(nxt)
         cur.append(nxt)
@@ -197,7 +197,7 @@ def untrained_attention(
     )
     try:
         for p_i, passage in enumerate(passages):
-            _, last_q = M.forward_pass(ckpt, passage.ids, need_attention=True)[:2]
+            _, _, last_q, _ = M.forward_pass_all(ckpt, passage.ids, need_attention=True)
             if out is None:
                 out = np.zeros((len(passages), last_q.shape[0], T), dtype=np.float32)
             out[p_i] = last_q.mean(dim=1).numpy()
