@@ -22,4 +22,5 @@ from . import (  # noqa: F401
     rank_attribution,
     scope_checks,
     sink_stability,
+    softmax_renormalization,
 )

@@ -26,7 +26,14 @@ class Paper:
     date: str
     on_user_list: bool
     surfaced_because: str
-    probes: tuple[str, ...]
+    #: ``{probe_name: polarity}``. A probe is a measurement, and papers disagree about
+    #: how it should come out, so the polarity belongs to the pairing rather than to
+    #: either side. ``+1``: the paper is supported when the probe reports SUPPORTED --
+    #: the probe's hypothesis is the paper's. ``-1``: the paper is supported when the
+    #: probe reports REFUTED. The name-variant measurement is the clear case: the
+    #: memorization-circuit account predicts the variants differ, the reconstruction
+    #: account predicts they do not, and both predictions are about the same numbers.
+    probes: dict
     #: "explanation" -- a candidate account of the effect, rolled into the headline.
     #: "premise" -- a check on whether there is an effect to explain at all. These are
     #: reported separately, because "the effect clears the noise floor" is a
@@ -47,7 +54,7 @@ PAPERS: tuple[Paper, ...] = (
             "analogy is real; the paper's unit of analysis is a generated reasoning "
             "trace with a verifiable answer."
         ),
-        probes=("cliff_token_scope",),
+        probes={"cliff_token_scope": 1},
     ),
     Paper(
         key="self_loops",
@@ -59,7 +66,7 @@ PAPERS: tuple[Paper, ...] = (
             "A homonym. SOPHIA's 'state' is a k-means cluster over reasoning-step "
             "activations; 'state_60482' is a passage label in the K8 schema."
         ),
-        probes=("self_loop_scope",),
+        probes={"self_loop_scope": 1},
     ),
     Paper(
         key="repeat_curse",
@@ -68,7 +75,7 @@ PAPERS: tuple[Paper, ...] = (
         date="2025-04-19",
         on_user_list=True,
         surfaced_because="Repetition was one of the hypotheses under consideration.",
-        probes=("repeat_curse_scope",),
+        probes={"repeat_curse_scope": 1},
     ),
     Paper(
         key="verbatim_circuits",
@@ -80,7 +87,7 @@ PAPERS: tuple[Paper, ...] = (
             "The counter-check for the original memorization reading -- the one paper "
             "on the list squarely about the phenomenon that was claimed."
         ),
-        probes=("memorization_entry", "name_variant_equivalence"),
+        probes={"memorization_entry": 1, "name_variant_equivalence": 1},
     ),
     Paper(
         key="focus_directions",
@@ -92,7 +99,7 @@ PAPERS: tuple[Paper, ...] = (
             "It goes beyond behavioural observation of lost-in-the-middle to the heads "
             "and query/key directions that route attention."
         ),
-        probes=("focus_directions",),
+        probes={"focus_directions": 1},
     ),
     Paper(
         key="lost_middle_birth",
@@ -105,7 +112,7 @@ PAPERS: tuple[Paper, ...] = (
             "models -- i.e. before any exposure could have mattered. Of the six, this is "
             "the only one whose scope conditions the 60482 setup actually meets."
         ),
-        probes=("position_bias",),
+        probes={"position_bias": 1},
     ),
     # --- not on the list, but where the measured numbers point ------------------------
     Paper(
@@ -120,7 +127,58 @@ PAPERS: tuple[Paper, ...] = (
             "That is the attention-sink signature, and nothing on the user's list "
             "addresses it."
         ),
-        probes=("attention_sink",),
+        probes={"attention_sink": 1},
+    ),
+    Paper(
+        key="softmax_artifact",
+        title="Are Emergent Abilities of Large Language Models a Mirage?",
+        citation="arXiv:2304.15004",
+        date="2023-04",
+        on_user_list=False,
+        surfaced_because=(
+            "Its general point is that a discontinuous metric -- a rank, or a "
+            "probability read against a moving normaliser -- can manufacture a sharp "
+            "change out of a smooth one. Both of the headline statistics here are of "
+            "that kind: a rank, and a probability measured while the dominant token "
+            "falls from 0.798 to 0.744."
+        ),
+        probes={"softmax_renormalization": -1},   # REFUTED there == renormalisation == this paper
+    ),
+    Paper(
+        key="reconstruction_not_recollection",
+        title="Recite, Reconstruct, Recollect: Memorization in LMs as a Multifaceted Phenomenon",
+        citation="arXiv:2406.17746",
+        date="2024-06",
+        on_user_list=False,
+        surfaced_because=(
+            "It splits memorization into recitation (of duplicated text), "
+            "reconstruction (of predictable templates) and recollection (of rare "
+            "single-exposure content), and the anchor is textbook reconstruction: "
+            "'74 km per hour' is a unit template the corpus supplies everywhere. It is "
+            "the only account that PREDICTED the never-trained-variant result rather "
+            "than merely tolerating it -- if the completion is reconstructive, "
+            "corrupting the name must cost nothing."
+        ),
+        probes={
+            # the variants predicting the same thing IS reconstruction
+            "name_variant_equivalence": -1,
+            # a flat truncation ladder IS a predictable template
+            "context_dependence": 1,
+        },
+    ),
+    Paper(
+        key="optimizer_noise",
+        title="Measuring Forgetting of Memorized Training Examples",
+        citation="arXiv:2207.00099",
+        date="2022-07",
+        on_user_list=False,
+        surfaced_because=(
+            "Per-example drift between two checkpoints is driven by the other ~1.02 "
+            "million sequences in the window, not by the one passage of interest. That "
+            "predicts a diffuse, non-localised perturbation -- which is what the "
+            "token-level analysis found, and what the attention null looks like."
+        ),
+        probes={"ctx_nll_structure": -1},   # no localised trace == diffuse optimizer noise
     ),
     Paper(
         key="sink_frozen",
@@ -137,7 +195,7 @@ PAPERS: tuple[Paper, ...] = (
             "derived consequence of which checkpoints were chosen, not a failed "
             "measurement."
         ),
-        probes=("sink_stability",),
+        probes={"sink_stability": 1},
     ),
     Paper(
         key="attention_not_attribution",
@@ -151,7 +209,7 @@ PAPERS: tuple[Paper, ...] = (
             "drained, so raw attention weight does not measure contribution and a null "
             "in it is uninformative in both directions."
         ),
-        probes=("norm_attribution",),
+        probes={"norm_attribution": 1},
     ),
     Paper(
         key="bigram_prior",
@@ -165,7 +223,7 @@ PAPERS: tuple[Paper, ...] = (
             "'/', ' per'. This is a corpus-frequency competition among unit "
             "conventions, and it may be the whole phenomenon."
         ),
-        probes=("context_dependence",),
+        probes={"context_dependence": 1},
     ),
     Paper(
         key="null_calibration",
@@ -177,15 +235,21 @@ PAPERS: tuple[Paper, ...] = (
             "Before any mechanism is proposed, the effect has to clear what happens "
             "between two checkpoints when nothing happened."
         ),
-        probes=("noise_floor", "rank_attribution", "ctx_nll_structure"),
+        probes={"noise_floor": 1, "rank_attribution": 1, "ctx_nll_structure": 1},
         kind="premise",
     ),
 )
 
 BY_KEY = {p.key: p for p in PAPERS}
 
-#: probe name -> paper key
-PROBE_TO_PAPER = {probe: p.key for p in PAPERS for probe in p.probes}
+#: probe name -> the paper keys that read it (a probe may serve several)
+PROBE_TO_PAPERS: dict[str, tuple[str, ...]] = {}
+for _p in PAPERS:
+    for _probe in _p.probes:
+        PROBE_TO_PAPERS[_probe] = PROBE_TO_PAPERS.get(_probe, ()) + (_p.key,)
+
+#: back-compat: one paper per probe, the first that claims it
+PROBE_TO_PAPER = {k: v[0] for k, v in PROBE_TO_PAPERS.items()}
 
 
 def on_user_list() -> tuple[Paper, ...]:

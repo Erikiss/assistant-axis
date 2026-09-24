@@ -40,6 +40,17 @@ _VERDICT_MARK = {
 _PAPER_VERDICT_RANK = ("SUPPORTED", "INCONCLUSIVE", "NOT_RUN", "REFUTED", "SCOPE_FAILED", "ERROR")
 
 
+#: With polarity -1 the probe's verdict is read the other way round: the paper predicts
+#: the measurement comes out against the probe's own hypothesis. SCOPE_FAILED and
+#: NOT_RUN do not flip -- "the subject matter is absent" and "not measured" are not
+#: evidence for anybody.
+_FLIP = {"SUPPORTED": "REFUTED", "REFUTED": "SUPPORTED"}
+
+
+def _apply_polarity(verdict: str, polarity: int) -> str:
+    return _FLIP.get(verdict, verdict) if polarity < 0 else verdict
+
+
 def _paper_verdict(verdicts: Sequence[str]) -> str:
     """A paper is only as strong as its strongest surviving probe.
 
@@ -63,9 +74,10 @@ def adjudicate(results: Sequence[ProbeResult]) -> dict:
 
     papers = []
     for paper in PAP.PAPERS:
-        vs = [by_probe[pr].verdict for pr in paper.probes if pr in by_probe]
-        if not vs:
+        raw = {pr: by_probe[pr].verdict for pr in paper.probes if pr in by_probe}
+        if not raw:
             continue
+        read = {pr: _apply_polarity(v, paper.probes[pr]) for pr, v in raw.items()}
         papers.append(
             {
                 "key": paper.key,
@@ -73,8 +85,15 @@ def adjudicate(results: Sequence[ProbeResult]) -> dict:
                 "citation": paper.citation,
                 "on_user_list": paper.on_user_list,
                 "kind": paper.kind,
-                "verdict": _paper_verdict(vs),
-                "probes": {pr: by_probe[pr].verdict for pr in paper.probes if pr in by_probe},
+                "verdict": _paper_verdict(list(read.values())),
+                "probes": {
+                    pr: (
+                        f"{v} (reads as {read[pr]} here)"
+                        if paper.probes[pr] < 0 and v in _FLIP else v
+                    )
+                    for pr, v in raw.items()
+                },
+                "inverted_probes": [pr for pr, pol in paper.probes.items() if pol < 0],
                 "surfaced_because": paper.surfaced_because,
             }
         )

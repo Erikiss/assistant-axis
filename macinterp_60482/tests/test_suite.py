@@ -248,7 +248,7 @@ def test_probes_handle_a_bundle_without_aux():
 
 
 def test_every_probe_maps_to_a_paper():
-    missing = set(registry.names()) - set(PAP.PROBE_TO_PAPER)
+    missing = set(registry.names()) - set(PAP.PROBE_TO_PAPERS)
     assert not missing, f"probes with no paper: {sorted(missing)}"
 
 
@@ -404,8 +404,8 @@ def test_sink_stability_refutes_when_profiles_actually_move():
 
 
 def test_sink_frozen_paper_is_judged_by_its_own_probe():
-    assert PAP.BY_KEY["sink_frozen"].probes == ("sink_stability",)
-    assert PAP.BY_KEY["attention_sinks"].probes == ("attention_sink",)
+    assert set(PAP.BY_KEY["sink_frozen"].probes) == {"sink_stability"}
+    assert set(PAP.BY_KEY["attention_sinks"].probes) == {"attention_sink"}
 
 
 # ---------------------------------------------------------------------------------
@@ -532,3 +532,45 @@ def test_qkv_module_requires_the_fused_projection():
 
     with pytest.raises(RuntimeError, match="no attention submodule"):
         A._qkv_module(_Fake(mlp=1), 7)
+
+
+# ---------------------------------------------------------------------------------
+# polarity: two papers can predict opposite outcomes of one measurement
+# ---------------------------------------------------------------------------------
+
+
+def test_the_name_variant_measurement_is_read_both_ways():
+    """The circuit account predicts the variants differ; the reconstruction account
+    predicts they do not. Same probe, opposite readings."""
+    assert PAP.BY_KEY["verbatim_circuits"].probes["name_variant_equivalence"] == 1
+    assert PAP.BY_KEY["reconstruction_not_recollection"].probes["name_variant_equivalence"] == -1
+
+    b = fake_bundle()
+    adj = report.adjudicate(registry.run(b, progress=False))
+    by_key = {p["key"]: p for p in adj["papers"]}
+    assert by_key["verbatim_circuits"]["verdict"] == "REFUTED"
+    assert by_key["reconstruction_not_recollection"]["verdict"] == "SUPPORTED"
+
+
+def test_softmax_artifact_is_supported_when_the_probe_refutes():
+    b = fake_bundle()
+    r = registry.get("softmax_renormalization")(b)
+    assert r.verdict == "REFUTED"
+    adj = report.adjudicate(registry.run(b, progress=False))
+    by_key = {p["key"]: p for p in adj["papers"]}
+    assert by_key["softmax_artifact"]["verdict"] == "SUPPORTED"
+
+
+def test_scope_failed_and_not_run_never_flip():
+    """'The subject matter is absent' and 'not measured' are evidence for nobody."""
+    assert report._apply_polarity("SCOPE_FAILED", -1) == "SCOPE_FAILED"
+    assert report._apply_polarity("NOT_RUN", -1) == "NOT_RUN"
+    assert report._apply_polarity("SUPPORTED", -1) == "REFUTED"
+    assert report._apply_polarity("REFUTED", -1) == "SUPPORTED"
+    assert report._apply_polarity("SUPPORTED", 1) == "SUPPORTED"
+
+
+def test_softmax_probe_runs_before_the_mechanistic_ones():
+    order = [p.name for p in registry.all_probes()]
+    assert order.index("softmax_renormalization") < order.index("attention_sink")
+    assert order.index("softmax_renormalization") < order.index("rank_attribution")

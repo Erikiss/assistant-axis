@@ -101,6 +101,35 @@ Position kann 0.69 der Masse halten und fast nichts beitragen. Ein Null in einer
 keinen Beitrag misst, ist in beide Richtungen uninformativ. `norm_attribution` rechnet das
 Profil als `|α_j|·‖v_j‖` neu.
 
+**Die Metrik selbst** (arXiv:2304.15004). Beide Schlagzeilen-Statistiken sind
+unstetig: ein Rang, und eine Wahrscheinlichkeit, gemessen während der dominante Token von
+0.798 auf 0.744 fällt. Ein Softmax koppelt alle Tokens; fällt der größte, gewinnen alle
+anderen, ohne dass ihnen etwas passiert wäre. Der saubere Test ist ein paarweiser
+Logit-Kontrast, denn `log p_a − log p_b = logit_a − logit_b` exakt — der Normierer kürzt sich.
+
+Aus den bereits gemessenen Zahlen gerechnet:
+
+| Grenze | | Δ log p(` per`) | Δ [logit(` per`) − logit(`ph`)] |
+|---|---|---|---|
+| 130000 → 131000 | Placebo | −0.034 | −0.129 |
+| 131000 → 132000 | **Exposition** | **+0.141** | **+0.211** |
+| 132000 → 133000 | Placebo | +0.035 | +0.189 |
+
+Im Wahrscheinlichkeitsraum sieht die Expositionsgrenze **4.0-fach** so groß aus wie die größte
+Placebo-Grenze. Im Logit-Kontrast nur noch **1.1-fach**. Der Großteil des scheinbaren Effekts
+ist Umnormierung.
+
+**Rekonstruktion statt Rekollektion** (arXiv:2406.17746). Die Arbeit trennt Memorierung in
+*recitation* (duplizierter Text), *reconstruction* (vorhersagbare Vorlagen) und *recollection*
+(seltener Einzelkontakt). „74 km per hour" ist eine Einheiten-Vorlage, die der Korpus überall
+liefert. Es ist die einzige Erklärung, die das Varianten-Ergebnis **vorhergesagt** statt nur
+geduldet hat: Ist die Fortsetzung rekonstruktiv, darf das Zerstören des Namens nichts kosten.
+
+**Optimierer-Rauschen** (arXiv:2207.00099). Die Drift eines einzelnen Beispiels zwischen zwei
+Checkpoints wird von den übrigen ~1.02 Millionen Sequenzen im Fenster getrieben, nicht von der
+einen interessanten Passage. Das sagt eine diffuse, nicht lokalisierte Störung voraus — genau
+was die Tokenebene-Auswertung gefunden hat.
+
 **Der lokale Fortsetzungsprior.** Die drei wahrscheinlichsten Fortsetzungen sind genau die
 drei Schreibweisen der Einheit: `ph`, `/`, ` per`. Das sieht nach einem Häufigkeitswettbewerb
 zwischen Einheitenkonventionen aus, und es könnte das ganze Phänomen sein. Die
@@ -144,7 +173,7 @@ was er schon gemessen hat.
 ### Tests
 
 ```bash
-pytest tests/ -q                          # 47 Tests, keine GPU, kein Download, kein Netz
+pytest tests/ -q                          # 55 Tests, keine GPU, kein Download, kein Netz
 M60482_NETWORK_TESTS=1 pytest tests/ -q   # + 3 Tests gegen huggingface.co (~12 KB)
 ```
 
@@ -162,7 +191,7 @@ m60482/
   aux.py               Trunkierungsleiter, Greedy-Fortsetzung, Namensersetzung, untrainiert
   stats.py             kontrollbezogene p-Werte und die Grenzen, die darin stehen
   registry.py          der Proben-Vertrag
-  papers.py            die Kandidaten und woher jeder kam
+  papers.py            die Kandidaten, woher jeder kam, und die Polarität je Probe
   report.py            Urteil je Paper, nicht je Probe
   run.py               Treiber
   probes/              eine Datei je Probe
@@ -179,6 +208,14 @@ Urteile: `SUPPORTED`, `REFUTED`, `INCONCLUSIVE`, `SCOPE_FAILED`, `NOT_RUN`, `ERR
 `SCOPE_FAILED` heißt nicht, dass ein Paper falsch ist — es heißt, dass sein Gegenstand hier
 nicht vorkommt.
 
+**Polarität.** Eine Probe ist eine *Messung*, und Paper sind sich uneinig, wie sie ausgehen
+sollte. Die Varianten-Messung ist der klare Fall: Die Memorierungs-Schaltkreis-Arbeit sagt
+voraus, dass die Varianten sich unterscheiden; die Rekonstruktions-Arbeit sagt voraus, dass sie
+es nicht tun. Beide Vorhersagen betreffen dieselben Zahlen. Deshalb gehört die Polarität zur
+*Paarung*, nicht zu einer Seite: `papers.py` bildet Paper auf `{probe: ±1}` ab, und der Bericht
+weist aus, welche Proben für welches Paper invertiert gelesen werden. `SCOPE_FAILED` und
+`NOT_RUN` kippen nie — „der Gegenstand fehlt" und „nicht gemessen" sind für niemanden ein Beleg.
+
 ### Reihenfolge
 
 Die billigen Proben laufen zuerst, weil sie die Prämisse kippen können. Ist das Zieltoken nie
@@ -189,6 +226,7 @@ stellen sollte.
 |---|---|---|
 | 10 | `memorization_entry` | Ist das Ziel je die Greedy-Fortsetzung? |
 | 15 | `noise_floor` | Überschreitet die Änderung das Checkpoint-Rauschen? |
+| 18 | `softmax_renormalization` | Überlebt der Effekt die Messung als Logit-Kontrast? |
 | 20 | `rank_attribution` | Bewegte sich das Ziel oder sein Konkurrent? |
 | 25 | `name_variant_equivalence` | Sagen nie trainierte Schreibvarianten dasselbe voraus? |
 | 30 | `context_dependence` | Wie kurz darf der Kontext werden? |
